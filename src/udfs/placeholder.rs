@@ -31,6 +31,7 @@ impl PlaceholderUDF {
         }
     }
 
+    #[must_use]
     pub fn with_name(self, name: &str) -> Self {
         Self {
             name:        name.to_string(),
@@ -39,10 +40,12 @@ impl PlaceholderUDF {
         }
     }
 
+    #[must_use]
     pub fn with_signature(self, signature: Signature) -> Self {
         Self { name: self.name, signature, return_type: self.return_type }
     }
 
+    #[must_use]
     pub fn with_return_type(self, return_type: DataType) -> Self {
         Self { name: self.name, signature: self.signature, return_type }
     }

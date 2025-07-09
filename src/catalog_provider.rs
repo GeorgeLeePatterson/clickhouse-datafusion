@@ -21,22 +21,26 @@ pub struct ClickHouseCatalogProvider {
 }
 
 impl ClickHouseCatalogProvider {
+    /// # Errors
+    /// - Returns an error if the catalog cannot be retrieved from the database.
     pub async fn try_new(pool: ClickHouseConnectionPool) -> Result<Self> {
         Ok(Self { schemas: DashMap::from_iter(Self::get_catalog(&pool).await?) })
     }
 
+    /// # Errors
+    /// - Returns an error if the catalog cannot be retrieved from the database.
     pub async fn refresh_catalog(&self, pool: &ClickHouseConnectionPool) -> Result<()> {
         let current = self.schemas.iter().map(|entry| entry.key().clone()).collect::<Vec<_>>();
         let updated = Self::get_catalog(pool).await?;
 
         // Remove schemas that are no longer present in the catalog
         for schema in current.into_iter().filter(|s| !updated.iter().any(|(name, _)| name == s)) {
-            let _ = self.schemas.remove(&schema);
+            drop(self.schemas.remove(&schema));
         }
 
         // Add schemas that are new in the catalog
         for (schema, table) in updated {
-            let _ = self.schemas.insert(schema, table);
+            drop(self.schemas.insert(schema, table));
         }
 
         Ok(())
@@ -57,7 +61,7 @@ impl ClickHouseCatalogProvider {
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
         // Add default database if empty
-        tables.entry("default".to_string()).or_insert_with(Vec::new);
+        let _ = tables.entry("default".to_string()).or_insert_with(Vec::new);
 
         tracing::debug!("Fetched schemas: {:?}", tables.keys());
 
@@ -82,7 +86,7 @@ impl CatalogProvider for ClickHouseCatalogProvider {
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
         if let Some(s) = self.schemas.get(name) {
             debug!("ClickHouseCatalogProvider found schema: {name}");
-            Some(s.value().clone())
+            Some(Arc::clone(&s))
         } else {
             debug!("ClickHouseCatalogProvider did not find schema: {name}");
             None
@@ -123,7 +127,7 @@ impl SchemaProvider for ClickHouseSchemaProvider {
             factory
                 .table_provider(TableReference::partial(self.name.clone(), table.to_string()))
                 .await
-                .map(Option::Some)
+                .map(Some)
                 .inspect_err(|error| error!(?error, "Error creating table provider"))
         } else {
             Ok(None)

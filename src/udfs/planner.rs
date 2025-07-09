@@ -15,6 +15,7 @@ use super::pushdown::CLICKHOUSE_FUNCTION_NODE_NAME;
 use crate::table_provider::ClickHouseTableProvider;
 
 // TODO: Docs - This actually executes the custom `ClickHouseFunctionNode` `UserDefinedLogicalNode`.
+#[derive(Clone, Copy, Debug)]
 pub struct ClickHouseExtensionPlanner;
 
 #[async_trait::async_trait]
@@ -33,7 +34,7 @@ impl ExtensionPlanner for ClickHouseExtensionPlanner {
                 .downcast_ref::<ClickHouseFunctionNode>()
                 .ok_or(plan_datafusion_err!("Failed to downcast to ClickHouseFunctionNode"))?;
 
-            let Some(LogicalPlan::TableScan(scan)) = clickhouse_node.inputs().first() else {
+            let Some(&LogicalPlan::TableScan(scan)) = clickhouse_node.inputs().first() else {
                 return plan_err!("Expected a TableScan logical plan");
             };
 

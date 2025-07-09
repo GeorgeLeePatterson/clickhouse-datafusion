@@ -33,12 +33,57 @@ use datafusion::sql::parser::Statement;
 use datafusion::sql::planner::{ContextProvider, ParserOptions, SqlToRel};
 use datafusion::sql::{ResolvedTableReference, TableReference};
 use datafusion::variable::VarType;
-use tracing::debug;
 
-use crate::udfs::analyzer::ClickHouseUDFPushdownAnalyzerRule;
 use crate::udfs::placeholder::PlaceholderUDF;
 use crate::udfs::planner::ClickHouseExtensionPlanner;
 use crate::udfs::pushdown::{CLICKHOUSE_UDF_ALIASES, clickhouse_udf_pushdown_udf};
+use crate::udfs::pushdown_analyzer::ClickHousePushdownAnalyzer;
+
+// TODO: Remove - docs
+// Convenience method for preparing a session context both with federation if the feature is enabled
+// as well as UDF pushdown support. It is called in `ClickHouseSessionContext::new` or
+// `ClickHouseSessionContext::from` as well.
+pub fn prepare_session_context(
+    ctx: SessionContext,
+    extension_planners: Option<Vec<Arc<dyn ExtensionPlanner + Send + Sync>>>,
+) -> SessionContext {
+    #[cfg(feature = "federation")]
+    use crate::federation::FederatedContext as _;
+
+    // If federation is enabled, federate the context first. The planners will be overridden to
+    // still include the FederatedQueryPlanner, this just saves a step with the optimizer
+    #[cfg(feature = "federation")]
+    let ctx = ctx.federate();
+    // Pull out state
+    let state = ctx.state();
+    // Pushdown analyzer rule
+    let state_builder = if state
+        .analyzer()
+        .rules
+        .iter()
+        .any(|rule| rule.name() == "clickhouse_pushdown_analyzer")
+    {
+        ctx.into_state_builder()
+    } else {
+        let mut analyzer_rules = state.analyzer().rules.clone();
+        analyzer_rules.push(
+            Arc::new(ClickHousePushdownAnalyzer::new()) as Arc<dyn AnalyzerRule + Send + Sync>
+        );
+        ctx.into_state_builder().with_analyzer_rules(analyzer_rules)
+    };
+    // Finally, build the context again passing the ClickHouseQueryPlanner
+    let ctx = SessionContext::new_with_state(
+        state_builder
+            .with_query_planner(Arc::new(ClickHouseQueryPlanner::new_with_planners(
+                extension_planners.unwrap_or_default(),
+            )))
+            .build(),
+    );
+    ctx.register_udf(clickhouse_udf_pushdown_udf());
+    // TODO: Remove
+    // ctx.register_udf(clickhouse_apply_udf());
+    ctx
+}
 
 // TODO: Docs - LOTS OF DOCS NEEDED HERE!!!
 //
@@ -59,21 +104,25 @@ impl Default for ClickHouseQueryPlanner {
 }
 
 impl ClickHouseQueryPlanner {
+    // TODO: Docs
     pub fn new() -> Self {
         let planners = vec![
             #[cfg(feature = "federation")]
-            Arc::new(crate::federation::datafusion_federation::FederatedPlanner::new()),
+            Arc::new(datafusion_federation::FederatedPlanner::new()),
             Arc::new(ClickHouseExtensionPlanner {}) as Arc<dyn ExtensionPlanner + Send + Sync>,
         ];
         ClickHouseQueryPlanner { planners }
     }
 
+    // TODO: Docs
     pub fn new_with_planners(planners: Vec<Arc<dyn ExtensionPlanner + Send + Sync>>) -> Self {
         let mut this = Self::new();
         this.planners.extend(planners);
         this
     }
 
+    // TODO: Docs
+    #[must_use]
     pub fn with_planner(mut self, planner: Arc<dyn ExtensionPlanner + Send + Sync>) -> Self {
         self.planners.push(planner);
         self
@@ -96,68 +145,76 @@ impl QueryPlanner for ClickHouseQueryPlanner {
 /// Wrapper for [`SessionContext`] which allows running arbitrary `ClickHouse` functions.
 #[derive(Clone)]
 pub struct ClickHouseSessionContext {
-    inner: SessionContext,
+    inner:        SessionContext,
+    expr_planner: Option<Arc<dyn ExprPlanner>>,
 }
 
 impl ClickHouseSessionContext {
+    // TODO: Docs
     pub fn new(
         ctx: SessionContext,
         extension_planners: Option<Vec<Arc<dyn ExtensionPlanner + Send + Sync>>>,
     ) -> Self {
-        // Initialize analyzer rule
-        let mut analyzer_rules = ctx.state().analyzer().rules.to_vec();
-        analyzer_rules
-            .push(Arc::new(ClickHouseUDFPushdownAnalyzerRule {})
-                as Arc<dyn AnalyzerRule + Send + Sync>);
-
-        // Create a new ClickHouseQueryPlanner
-        let query_planner =
-            ClickHouseQueryPlanner::new_with_planners(extension_planners.unwrap_or_default());
-
-        let ctx = SessionContext::new_with_state(
-            ctx.into_state_builder()
-                .with_analyzer_rules(analyzer_rules)
-                .with_query_planner(Arc::new(query_planner))
-                .build(),
-        );
-        debug!("Built state and session context");
-
-        ctx.register_udf(clickhouse_udf_pushdown_udf());
-        debug!("Registered ClickHouse Pushdown UDF");
-
-        Self { inner: ctx }
+        Self { inner: prepare_session_context(ctx, extension_planners), expr_planner: None }
     }
 
-    pub fn with_new_context(self, inner: SessionContext) -> Self { Self { inner } }
+    #[must_use]
+    pub fn with_expr_planner(mut self, expr_planner: Arc<dyn ExprPlanner>) -> Self {
+        self.expr_planner = Some(expr_planner);
+        self
+    }
 
+    // TODO: Docs - especially mention that using the provided context WILL NOT WORK with pushdown
     pub fn into_session_context(self) -> SessionContext { self.inner }
 
+    // TODO: Docs - mention and link the `sql` method on SessionContext
+    /// # Errors
+    ///
+    /// Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn sql(&self, sql: &str) -> Result<DataFrame> {
         self.sql_with_options(sql, SQLOptions::new()).await
     }
 
+    // TODO: Docs - mention and link the `sql_with_options` method on SessionContext
+    /// # Errors
+    ///
+    /// Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn sql_with_options(&self, sql: &str, options: SQLOptions) -> Result<DataFrame> {
         let state = self.inner.state();
         let statement = state.sql_to_statement(sql, "ClickHouse")?;
-        let references = state.resolve_table_references(&statement)?;
-
-        // DEV (DataFusion PR): Post PR that requests SessionContextProvider can be provided
-        let mut provider =
-            ClickHouseContextProvider::new(state.clone(), HashMap::with_capacity(references.len()));
-
-        let plan = self.statement_to_plan(&state, statement, &mut provider).await?;
+        // TODO: Remove
+        tracing::info!("1. Statement (state.sql_to_statement): {statement:#?}");
+        let plan = self.statement_to_plan(&state, statement).await?;
+        // TODO: Remove
+        tracing::info!("2. Plan: {plan:#?}");
         options.verify_plan(&plan)?;
-
+        // TODO: Remove
+        tracing::info!("3. Plan Verified!");
         self.execute_logical_plan(plan).await
     }
 
+    // TODO: Docs - mention and link the `statement_to_plan` method on SessionContext
+    /// # Errors
+    /// - Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn statement_to_plan(
         &self,
         state: &SessionState,
         statement: Statement,
-        provider: &mut ClickHouseContextProvider,
     ) -> Result<LogicalPlan> {
         let references = state.resolve_table_references(&statement)?;
+
+        // TODO: Remove
+        // let lambda_planner = Arc::new(ClickHouseLambdaPlanner);
+        let provider =
+            ClickHouseContextProvider::new(state.clone(), HashMap::with_capacity(references.len()));
+        // TODO: Remove
+        // .with_expr_planner(lambda_planner);
+
+        let mut provider = if let Some(planner) = self.expr_planner.as_ref() {
+            provider.with_expr_planner(Arc::clone(planner))
+        } else {
+            provider
+        };
 
         for reference in references {
             // DEV (DataFusion PR): Post PR that makes `resolve_table_ref` pub and access to tables
@@ -168,17 +225,17 @@ impl ClickHouseSessionContext {
                 let resolved = v.key();
                 if let Ok(schema) = provider.state.schema_for_ref(resolved.clone()) {
                     if let Some(table) = schema.table(&resolved.table).await? {
-                        v.insert(provider_as_source(table));
+                        let _ = v.insert(provider_as_source(table));
                     }
                 }
             }
         }
 
-        SqlToRel::new_with_options(&(*provider), self.get_parser_options(&self.state()))
+        SqlToRel::new_with_options(&provider, Self::get_parser_options(&self.state()))
             .statement_to_plan(statement)
     }
 
-    fn get_parser_options(&self, state: &SessionState) -> ParserOptions {
+    fn get_parser_options(state: &SessionState) -> ParserOptions {
         let sql_parser_options = &state.config().options().sql_parser;
 
         ParserOptions {
@@ -187,6 +244,8 @@ impl ClickHouseSessionContext {
             enable_options_value_normalization: sql_parser_options
                 .enable_options_value_normalization,
             support_varchar_with_length:        sql_parser_options.support_varchar_with_length,
+            // map_varchar_to_utf8view:            sql_parser_options.map_varchar_to_utf8view,
+            // TODO: Remove
             map_varchar_to_utf8view:            sql_parser_options.map_varchar_to_utf8view,
             collect_spans:                      sql_parser_options.collect_spans,
         }
@@ -194,11 +253,11 @@ impl ClickHouseSessionContext {
 }
 
 impl From<SessionContext> for ClickHouseSessionContext {
-    fn from(inner: SessionContext) -> Self { Self { inner } }
+    fn from(inner: SessionContext) -> Self { Self::new(inner, None) }
 }
 
 impl From<&SessionContext> for ClickHouseSessionContext {
-    fn from(inner: &SessionContext) -> Self { Self { inner: inner.clone() } }
+    fn from(inner: &SessionContext) -> Self { Self::new(inner.clone(), None) }
 }
 
 impl std::ops::Deref for ClickHouseSessionContext {
@@ -207,8 +266,10 @@ impl std::ops::Deref for ClickHouseSessionContext {
     fn deref(&self) -> &Self::Target { &self.inner }
 }
 
+// TODO: Docs - a LOT more docs here, this is a pretty big needed step
+//
 /// Custom [`ContextProvider`].
-/// Required since DataFusion will throw an error on unrecognized functions and the goal is to
+/// Required since `DataFusion` will throw an error on unrecognized functions and the goal is to
 /// preserve the Expr structure.
 pub struct ClickHouseContextProvider {
     state:         SessionState,
@@ -222,15 +283,23 @@ impl ClickHouseContextProvider {
         state: SessionState,
         tables: HashMap<ResolvedTableReference, Arc<dyn TableSource>>,
     ) -> Self {
-        let expr_planners = state.expr_planners().to_vec();
-        Self { state, tables, expr_planners, type_planner: None }
+        Self { state, tables, expr_planners: vec![], type_planner: None }
     }
 
+    #[must_use]
+    pub fn with_expr_planner(mut self, planner: Arc<dyn ExprPlanner>) -> Self {
+        self.expr_planners.push(planner);
+        self
+    }
+
+    #[must_use]
     pub fn with_type_planner(mut self, type_planner: Arc<dyn TypePlanner>) -> Self {
         self.type_planner = Some(type_planner);
         self
     }
 
+    // NOTE: This method normally resides on `SessionState` but since it's `pub(crate)` it must
+    // be reproduced and this is its temporary home until the method is made pub.
     pub fn resolve_table_ref(
         &self,
         table_ref: impl Into<TableReference>,
@@ -242,14 +311,20 @@ impl ClickHouseContextProvider {
 
 impl ContextProvider for ClickHouseContextProvider {
     fn get_function_meta(&self, name: &str) -> Option<Arc<ScalarUDF>> {
-        // Early exit for clickhouse_pushdown
+        // Early exit for clickhouse pushdown
         if CLICKHOUSE_UDF_ALIASES.contains(&name) {
             return Some(Arc::new(clickhouse_udf_pushdown_udf()));
         }
 
+        // TODO: Remove
+        // // Early exit for clickhouse apply
+        // if CLICKHOUSE_APPLY_ALIASES.contains(&name) {
+        //     return Some(Arc::new(clickhouse_apply_udf()));
+        // }
+
         // Delegate to inner provider for other UDFs
         if let Some(func) = self.state.scalar_functions().get(name) {
-            return Some(func.clone());
+            return Some(Arc::clone(func));
         }
 
         // Allow inner functions to parse as placeholder ScalarUDFs
@@ -266,10 +341,7 @@ impl ContextProvider for ClickHouseContextProvider {
         }
     }
 
-    fn get_table_source(
-        &self,
-        name: TableReference,
-    ) -> datafusion::common::Result<Arc<dyn TableSource>> {
+    fn get_table_source(&self, name: TableReference) -> Result<Arc<dyn TableSource>> {
         let name = self.resolve_table_ref(name);
         self.tables
             .get(&name)
@@ -281,7 +353,7 @@ impl ContextProvider for ClickHouseContextProvider {
         &self,
         name: &str,
         args: Vec<Expr>,
-    ) -> datafusion::common::Result<Arc<dyn TableSource>> {
+    ) -> Result<Arc<dyn TableSource>> {
         let tbl_func = self
             .state
             .table_functions()
@@ -296,11 +368,7 @@ impl ContextProvider for ClickHouseContextProvider {
     /// Create a new CTE work table for a recursive CTE logical plan
     /// This table will be used in conjunction with a Worktable physical plan
     /// to read and write each iteration of a recursive CTE
-    fn create_cte_work_table(
-        &self,
-        name: &str,
-        schema: SchemaRef,
-    ) -> datafusion::common::Result<Arc<dyn TableSource>> {
+    fn create_cte_work_table(&self, name: &str, schema: SchemaRef) -> Result<Arc<dyn TableSource>> {
         let table = Arc::new(CteWorkTable::new(name, schema));
         Ok(provider_as_source(table))
     }
@@ -333,6 +401,7 @@ impl ContextProvider for ClickHouseContextProvider {
 
     fn options(&self) -> &ConfigOptions { self.state.config_options() }
 
+    // TODO: Does this behave well with the logic above in `get_function_meta`?
     fn udf_names(&self) -> Vec<String> { self.state.scalar_functions().keys().cloned().collect() }
 
     fn udaf_names(&self) -> Vec<String> {
@@ -341,7 +410,7 @@ impl ContextProvider for ClickHouseContextProvider {
 
     fn udwf_names(&self) -> Vec<String> { self.state.window_functions().keys().cloned().collect() }
 
-    fn get_file_type(&self, ext: &str) -> datafusion::common::Result<Arc<dyn FileType>> {
+    fn get_file_type(&self, ext: &str) -> Result<Arc<dyn FileType>> {
         self.state
             .get_file_format_factory(ext)
             .ok_or(plan_datafusion_err!("There is no registered file format with ext {ext}"))

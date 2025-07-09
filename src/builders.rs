@@ -1,8 +1,7 @@
-mod engine;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use clickhouse_arrow::prelude::ClickHouseEngine;
 use clickhouse_arrow::{
     ArrowConnectionPoolBuilder, ArrowOptions, ArrowPoolBuilder, ClientBuilder, CreateOptions,
     Destination,
@@ -16,11 +15,9 @@ use datafusion::prelude::*;
 use datafusion::sql::TableReference;
 use tracing::{debug, error};
 
-pub use self::engine::*;
 use crate::connection::ClickHouseConnectionPool;
 use crate::table_factory::ClickHouseTableProviderFactory;
-use crate::utils::params::*;
-use crate::utils::{self, register_builtins};
+use crate::utils::{self, ENDPOINT_PARAM, default_str_to_expr, register_builtins};
 use crate::{ClickHouseCatalogProvider, ClickHouseTableFactory};
 
 /// The default `DataFusion` catalog name if no other name is provided.
@@ -52,7 +49,7 @@ impl ClickHouseBuilder {
     /// tables.
     ///
     /// NOTE: While `clickhouse_arrow` defaults to binary encoding for strings (via
-    /// [`clickhouse_arrow::ArrowOptions::strings_as_strings`] == false), for DataFusion the
+    /// [`clickhouse_arrow::ArrowOptions::strings_as_strings`] == false), for `DataFusion` the
     /// default is `true`.
     pub fn new(endpoint: impl Into<Destination>) -> Self {
         let endpoint = endpoint.into();
@@ -91,7 +88,7 @@ impl ClickHouseBuilder {
     //
     /// `clickhouse_arrow` defaults to binary encoding for
     /// [`datafusion::arrow::datatypes::DataType::Utf8`] columns, the default is inverted for
-    /// DataFusion. This disables that change and uses binary encoding for strings.
+    /// `DataFusion`. This disables that change and uses binary encoding for strings.
     #[must_use]
     pub fn configure_arrow_options(mut self, f: impl FnOnce(ArrowOptions) -> ArrowOptions) -> Self {
         self.pool_builder = self.pool_builder.configure_client(|c| {
@@ -103,6 +100,7 @@ impl ClickHouseBuilder {
 
     // TODO: Docs - why would I do this?
     /// Sets the factory for the `ClickHouse` table provider.
+    #[must_use]
     pub fn factory(mut self, factory: Arc<ClickHouseTableProviderFactory>) -> Self {
         self.factory = factory;
         self
@@ -113,11 +111,16 @@ impl ClickHouseBuilder {
     /// Build ensures `ClickHouse` builtins are registered (such as nested functions), the pool is
     /// attached to the factory, the `ClickHouse` endpoint is reachable, and the catalog is created
     /// and registered to the [`SessionContext`].
+    ///
+    /// # Errors
+    /// - Returns an error if the `ClickHouse` endpoint is unreachable
+    /// - Returns an error if the `ClickHouse` catalog fails to be created
     pub async fn build_catalog(
         self,
         ctx: &SessionContext,
         catalog: Option<&str>,
     ) -> Result<ClickHouseCatalogBuilder> {
+        // Register built in functions and "simple" clickhouse udf
         register_builtins(ctx);
 
         let catalog = catalog.unwrap_or(DEFAULT_CLICKHOUSE_CATALOG).to_string();
@@ -175,11 +178,12 @@ impl ClickHouseCatalogBuilder {
                 .await
                 .inspect_err(|error| error!(?error, "Failed to register catalog {catalog}"))?,
         );
-        ctx.register_catalog(catalog.as_str(), provider.clone());
-
-        // Log the schemas for reference
-        let schemas = provider.schema_names();
-        debug!(catalog, ?schemas, "Registered catalog provider");
+        drop(
+            ctx.register_catalog(
+                catalog.as_str(),
+                Arc::clone(&provider) as Arc<dyn CatalogProvider>,
+            ),
+        );
 
         Ok(ClickHouseCatalogBuilder { catalog, schema, endpoint, pool, factory, provider })
     }
@@ -193,15 +197,15 @@ impl ClickHouseCatalogBuilder {
     // TODO: Docs
     pub fn connection_pool(&self) -> &ClickHouseConnectionPool { &self.pool }
 
-    // TODO: Docs
+    // TODO: Docs - allows updating the schema and continuing
+    /// # Errors
+    /// - Returns an error if the schema will be created and fails
     pub async fn with_schema(mut self, name: impl Into<String>) -> Result<Self> {
         let name = name.into();
-
         // Don't re-create if schema is already set
         if name == self.schema {
             return Ok(self);
         }
-
         self.schema = name;
 
         // Ensure the database exists if not default
@@ -212,7 +216,6 @@ impl ClickHouseCatalogBuilder {
 
         // Be sure to refresh the catalog before setting the schema
         self.provider.refresh_catalog(&self.pool).await?;
-
         Ok(self)
     }
 
@@ -252,6 +255,10 @@ impl ClickHouseCatalogBuilder {
     // ClickHouseTableCreator.
     //
     /// Registers a specific `ClickHouse` table, optionally renaming it in the session state.
+    ///
+    /// # Errors
+    /// - Returns an error if the table does not exist in the remote database
+    /// - Returns an error if the table cannot be registered to the context
     pub async fn register_table(
         &self,
         name: impl Into<TableReference>,
@@ -275,22 +282,26 @@ impl ClickHouseCatalogBuilder {
 
         let factory = ClickHouseTableFactory::new(self.pool.clone());
         let provider = factory.table_provider(table).await?;
-        ctx.register_table(table_as, provider)?;
+        debug!(?table_as, "Registering ClickHouse table provider");
+        drop(ctx.register_table(table_as, provider)?);
 
         Ok(())
     }
 
-    // TODO: Remove - DOCS!!! Either THIS or `build`/`build_federated` MUST be called for table
+    // TODO: Remove - DOCS!!! Either THIS or `build` MUST be called for table
     // creation to take effect.
     //
     /// Build the current `schema` (database) being managed by this catalog, optionally registering
     /// a new schema to continue building
+    ///
+    /// # Errors
+    /// - Returnes an error if an error occurs while refreshing the catalog
     pub async fn build_schema(
         mut self,
         new_schema: Option<String>,
         ctx: &SessionContext,
     ) -> Result<Self> {
-        let _catalog = self.build(ctx).await?;
+        let _catalog = self.build_internal(ctx).await?;
         self.schema = new_schema.unwrap_or(self.schema);
         Ok(self)
     }
@@ -298,18 +309,43 @@ impl ClickHouseCatalogBuilder {
     /// Re-register the catalog, updating the [`SessionContext`], and return the updated context.
     ///
     /// NOTE: It is important to use the [`SessionContext`] provided back from this function.
+    ///
+    /// # Errors
+    /// - Returns an error if the `SessionContext` has not been federated
+    /// - Returnes an error if an error occurs while refreshing the catalog
     #[cfg(feature = "federation")]
-    pub async fn build_federated(&self, ctx: &SessionContext) -> Result<SessionContext> {
-        let ctx = crate::federation::federate_session_context(Some(ctx));
-        let _catalog = self.build(&ctx).await?;
-        debug!(catalog = self.catalog, "Federated catalog registered with datafusion context");
-        Ok(ctx)
+    pub async fn build(&self, ctx: &SessionContext) -> Result<Arc<ClickHouseCatalogProvider>> {
+        use datafusion::common::exec_err;
+
+        use crate::federation::FederatedContext as _;
+
+        if !ctx.is_federated() {
+            return exec_err!(
+                "Building this schema with federation enabled but no federated SessionContext \
+                 will fail. Call `ctx.federate()` before providing a context to build with."
+            );
+        }
+
+        self.build_internal(ctx).await
+    }
+
+    /// Re-register the catalog, updating the [`SessionContext`], and return the updated context.
+    ///
+    /// NOTE: It is important to use the [`SessionContext`] provided back from this function.
+    /// # Errors
+    /// - Returnes an error if an error occurs while refreshing the catalog
+    #[cfg(not(feature = "federation"))]
+    pub async fn build(&self, ctx: &SessionContext) -> Result<Arc<ClickHouseCatalogProvider>> {
+        self.build_internal(ctx).await
     }
 
     /// Re-registers the catalog provider, re-configures the [`SessionContext`], and return a
     /// clone of the catalog.
-    pub async fn build(&self, ctx: &SessionContext) -> Result<Arc<ClickHouseCatalogProvider>> {
-        let catalog = self.provider.clone();
+    ///
+    /// # Errors
+    /// - Returnes an error if an error occurs while refreshing the catalog
+    async fn build_internal(&self, ctx: &SessionContext) -> Result<Arc<ClickHouseCatalogProvider>> {
+        let catalog = Arc::clone(&self.provider);
         debug!(catalog = self.catalog, "ClickHouse catalog created");
 
         // Re-register UDFs
@@ -317,7 +353,7 @@ impl ClickHouseCatalogBuilder {
 
         // Re-register catalog
         catalog.refresh_catalog(&self.pool).await?;
-        ctx.register_catalog(&self.catalog, catalog.clone());
+        drop(ctx.register_catalog(&self.catalog, Arc::clone(&catalog) as Arc<dyn CatalogProvider>));
 
         Ok(catalog)
     }
@@ -346,6 +382,10 @@ impl ClickHouseTableCreator {
     }
 
     /// Create the table, returning back a [`ClickHouseCatalogBuilder`] to create more tables.
+    ///
+    /// # Errors
+    /// - Returns an error if the `TableProviderFactory` fails to create the table
+    /// - Returnes an error if an error occurs while refreshing the catalog
     pub async fn create(self, ctx: &SessionContext) -> Result<ClickHouseCatalogBuilder> {
         let schema = self.builder.schema.clone();
         let table = self.name;
@@ -359,8 +399,8 @@ impl ClickHouseTableCreator {
             .map(|(col, value)| (col, default_str_to_expr(&value)))
             .collect::<HashMap<_, _>>();
 
-        let mut options = super::utils::create_options_to_params(self.options).into_params();
-        let _ = options.insert(ENDPOINT_PARAM.into(), self.builder.endpoint.clone());
+        let mut options = utils::create_options_to_params(self.options).into_params();
+        drop(options.insert(ENDPOINT_PARAM.into(), self.builder.endpoint.clone()));
 
         let table_ref = TableReference::partial(schema.as_str(), table.as_str());
         let cmd = CreateExternalTable {
@@ -368,7 +408,9 @@ impl ClickHouseTableCreator {
             schema: Arc::new(DFSchema::try_from(Arc::clone(&self.schema))?),
             options,
             column_defaults,
-            constraints: Constraints::empty(),
+            // TODO: Remove
+            constraints: Constraints::default(),
+            // constraints: Constraints::empty(),
             table_partition_cols: vec![],
             if_not_exists: false,
             location: String::new(),
@@ -386,7 +428,8 @@ impl ClickHouseTableCreator {
             .inspect_err(|error| error!(?error, table, "Factory error creating table"))?;
         debug!(table, "Table created, catalog will be refreshed in `build`");
 
-        // TODO: Remove - does anything need to be refreshed??
+        // Refresh the catalog after creating the table
+        drop(self.builder.build_internal(ctx).await?);
 
         Ok(self.builder)
     }

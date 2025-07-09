@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::sync::Arc;
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -32,7 +33,7 @@ impl Stream for RecordBatchStream {
     type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         self.as_mut().project().stream.poll_next(cx)
@@ -40,11 +41,14 @@ impl Stream for RecordBatchStream {
 }
 
 impl datafusion::physical_plan::RecordBatchStream for RecordBatchStream {
-    fn schema(&self) -> SchemaRef { self.schema.clone() }
+    fn schema(&self) -> SchemaRef { Arc::clone(&self.schema) }
 }
 
-/// Helper function to create a SendableRecordBatchStream from a stream of RecordBatches where
+/// Helper function to create a `SendableRecordBatchStream` from a stream of `RecordBatch`es where
 /// the schema must be extracted from the first batch.
+///
+/// # Errors
+/// - Returns an error if the stream is empty or the first batch fails.
 pub async fn record_batch_stream_from_stream(
     mut stream: impl Stream<Item = DataFusionResult<RecordBatch>> + Send + Unpin + 'static,
 ) -> DataFusionResult<SendableRecordBatchStream> {

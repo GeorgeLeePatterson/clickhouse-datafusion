@@ -1,6 +1,6 @@
-//! # ClickHouse SQL DataFusion TableProvider
+//! # `ClickHouse` SQL `DataFusion` `TableProvider`
 //!
-//! This module implements a SQL [`TableProvider`] for DataFusion.
+//! This module implements a SQL [`TableProvider`] for `DataFusion`.
 //!
 //! This is used as a fallback if the `datafusion-federation` optimizer is not enabled.
 #[cfg(feature = "federation")]
@@ -67,11 +67,18 @@ impl fmt::Debug for SqlTable {
             .field("name", &self.name)
             .field("schema", &self.schema)
             .field("table_reference", &self.table_reference)
+            .field("pool", &"ClickHouseConnectionPool")
+            .field("dialect", &self.dialect)
+            .field("exprs", &self.exprs)
             .finish()
     }
 }
 
 impl SqlTable {
+    /// Create a new [`SqlTable`] from a name and a [`ClickHouseConnectionPool`].
+    ///
+    /// # Errors
+    /// - Returns an error if the table does not exist.
     pub async fn new(
         name: &str,
         pool: ClickHouseConnectionPool,
@@ -98,11 +105,14 @@ impl SqlTable {
         }
     }
 
+    #[must_use]
     pub fn with_exprs(mut self, exprs: Vec<Expr>) -> Self {
         self.exprs = Some(exprs);
         self
     }
 
+    /// # Errors
+    /// - Returns an error if the logical plan creation fails
     pub fn scan_to_sql(
         &self,
         projection: Option<&Vec<usize>>,
@@ -111,7 +121,6 @@ impl SqlTable {
     ) -> DataFusionResult<String> {
         let logical_plan = self.create_logical_plan(projection, filters, limit)?;
         let sql = Unparser::new(self.dialect()).plan_to_sql(&logical_plan)?.to_string();
-
         Ok(sql)
     }
 
@@ -126,7 +135,6 @@ impl SqlTable {
             TableReference::Full { schema, table, .. } => TableReference::partial(schema, table),
             table_ref => table_ref,
         };
-
         let table_source = LogicalTableSource::new(self.schema());
         let mut builder = LogicalPlanBuilder::scan_with_filters(
             table_ref,
@@ -134,11 +142,9 @@ impl SqlTable {
             projection.cloned(),
             filters.to_vec(),
         )?;
-
         if let Some(exprs) = &self.exprs {
             builder = builder.project(exprs.clone())?;
         }
-
         builder.limit(0, limit)?.build()
     }
 
@@ -147,7 +153,12 @@ impl SqlTable {
         projection: Option<&Vec<usize>>,
         sql: String,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(ClickHouseSqlExec::new(projection, &self.schema(), self.pool.clone(), sql)?))
+        Ok(Arc::new(ClickHouseSqlExec::try_new(
+            projection,
+            &self.schema(),
+            self.pool.clone(),
+            sql,
+        )?))
     }
 
     // Return the current memory location of the object as a unique identifier
@@ -212,7 +223,7 @@ impl TableProvider for SqlTable {
 }
 
 impl Display for SqlTable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "ClickHouseSqlTable {}", self.name)
     }
 }
@@ -220,6 +231,10 @@ impl Display for SqlTable {
 static ONE_COLUMN_SCHEMA: LazyLock<SchemaRef> =
     LazyLock::new(|| Arc::new(Schema::new(vec![Field::new("1", DataType::Int64, true)])));
 
+/// Create a new [`SqlTable`] from a name and a [`ClickHouseConnectionPool`].
+///
+/// # Errors
+/// - Returns an error if the projection fails
 pub fn project_schema_safe(
     schema: &SchemaRef,
     projection: Option<&Vec<usize>>,
@@ -251,14 +266,17 @@ pub struct ClickHouseSqlExec {
 }
 
 impl ClickHouseSqlExec {
-    pub fn new(
+    /// Create a new [`ClickHouseSqlExec`] instance.
+    ///
+    /// # Errors
+    /// - Returns an error if the schema projection fails
+    pub fn try_new(
         projection: Option<&Vec<usize>>,
         schema: &SchemaRef,
         pool: ClickHouseConnectionPool,
         sql: String,
     ) -> DataFusionResult<Self> {
         let projected_schema = project_schema_safe(schema, projection)?;
-
         Ok(Self {
             projected_schema: Arc::clone(&projected_schema),
             pool,
@@ -275,18 +293,22 @@ impl ClickHouseSqlExec {
     #[must_use]
     pub fn clone_pool(&self) -> ClickHouseConnectionPool { self.pool.clone() }
 
+    /// Returns the SQL query string used by this execution plan.
+    ///
+    /// # Errors
+    /// - Returns an error if the SQL query string cannot be cloned.
     pub fn sql(&self) -> Result<String> { Ok(self.sql.clone()) }
 }
 
-impl std::fmt::Debug for ClickHouseSqlExec {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl fmt::Debug for ClickHouseSqlExec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let sql = self.sql().unwrap_or_default();
         write!(f, "ClickHouseSqlExec sql={sql}")
     }
 }
 
 impl DisplayAs for ClickHouseSqlExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter<'_>) -> fmt::Result {
         let sql = self.sql().unwrap_or_default();
         write!(f, "ClickHouseSqlExec sql={sql}")
     }
@@ -319,7 +341,6 @@ impl ExecutionPlan for ClickHouseSqlExec {
         tracing::debug!("ClickHouseSqlExec sql: {sql}");
 
         let schema = self.schema();
-
         let pool = self.pool.clone();
         let projected_schema = Arc::clone(&self.projected_schema);
         let fut = async move {

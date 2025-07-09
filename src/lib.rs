@@ -9,7 +9,7 @@ pub mod federation;
 pub mod prelude;
 mod sink;
 pub mod sql;
-mod stream;
+pub mod stream;
 mod table_factory;
 mod table_provider;
 pub mod udfs;
@@ -35,3 +35,8 @@ pub use context::*;
 pub use sink::*;
 pub use table_factory::*;
 pub use table_provider::*;
+
+#[cfg(feature = "test-utils")]
+mod dev_deps {
+    use tokio as _;
+}

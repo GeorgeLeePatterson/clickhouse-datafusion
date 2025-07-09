@@ -10,11 +10,14 @@ mod reexports {
 
 pub use reexports::*;
 
-pub use super::builders::{ClickHouseBuilder, ClickHouseEngine};
+pub use super::builders::ClickHouseBuilder;
 pub use super::connection::{ArrowPoolConnection, ClickHouseConnection, ClickHouseConnectionPool};
 pub use super::sink::ClickHouseDataSink;
 pub use super::sql::SqlTable;
 pub use super::table_factory::{ClickHouseTableFactory, ClickHouseTableProviderFactory};
 pub use super::table_provider::ClickHouseTableProvider;
-pub use super::udfs::function::clickhouse_func_udf;
 pub use super::udfs::register_clickhouse_functions;
+pub use super::udfs::simple::clickhouse_func_udf;
+
+// TODO: crate::federation exports (esp traits)
+// TODO: crate::context exports (esp traits)

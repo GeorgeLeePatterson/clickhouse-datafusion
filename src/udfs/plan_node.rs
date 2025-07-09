@@ -1,257 +1,165 @@
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::FieldRef;
-use datafusion::common::{Column, DFSchema, DFSchemaRef, Spans};
+use datafusion::arrow::datatypes::Field;
+use datafusion::common::{Column, DFSchema, Spans};
 use datafusion::error::Result;
 use datafusion::logical_expr::expr::Alias;
-use datafusion::logical_expr::{
-    InvariantLevel, LogicalPlan, Projection, SubqueryAlias, TableScan, UserDefinedLogicalNodeCore,
-};
+use datafusion::logical_expr::TableScan;
 use datafusion::prelude::Expr;
-use datafusion::sql::TableReference;
 
-use super::analyzer::ClickHouseFunction;
-use super::pushdown::CLICKHOUSE_FUNCTION_NODE_NAME;
+// Re-export the ClickHouseFunction and ClickHouseFunctionNode from pushdown_analyzer
+pub use crate::udfs::pushdown_analyzer::{ClickHouseFunction, ClickHouseFunctionNode};
 
-// TODO: Docs - this is the "wrapper" logical plan that is created to recognize ClickHouse functions
-// that will be pushed down to the ClickHouse server.
-#[derive(Clone, Debug)]
-pub struct ClickHouseFunctionNode {
-    table_name: String,
-    exprs:      Vec<Expr>,
-    input:      LogicalPlan,
-    schema:     DFSchemaRef,
-}
+// The ClickHouseFunctionNode implementation is now in pushdown_analyzer.rs
 
-impl ClickHouseFunctionNode {
-    pub fn try_new(funcs: Vec<ClickHouseFunction>, input: TableScan) -> Result<Self> {
-        let (exprs, schema) = merge_function_exprs_in_schema(funcs, &input)?;
-        Ok(Self {
-            table_name: input.table_name.table().to_string(),
-            exprs,
-            input: LogicalPlan::TableScan(input),
-            schema: Arc::new(schema),
-        })
-    }
-
-    pub fn into_projection_plan(self) -> Result<LogicalPlan> {
-        let alias = TableReference::bare(self.table_name.as_str());
-        let projection =
-            Projection::try_new_with_schema(self.exprs, Arc::new(self.input), self.schema)?;
-        let input = Arc::new(LogicalPlan::Projection(projection));
-        Ok(LogicalPlan::SubqueryAlias(SubqueryAlias::try_new(input, alias)?))
-    }
-}
-
-impl UserDefinedLogicalNodeCore for ClickHouseFunctionNode {
-    fn name(&self) -> &str { CLICKHOUSE_FUNCTION_NODE_NAME }
-
-    fn inputs(&self) -> Vec<&LogicalPlan> { vec![&self.input] }
-
-    fn schema(&self) -> &DFSchemaRef { &self.schema }
-
-    fn expressions(&self) -> Vec<Expr> { self.exprs.clone() }
-
-    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{CLICKHOUSE_FUNCTION_NODE_NAME}: {} ", self.input)
-    }
-
-    fn with_exprs_and_inputs(
-        &self,
-        exprs: Vec<Expr>,
-        mut inputs: Vec<LogicalPlan>,
-    ) -> Result<Self> {
-        assert_eq!(inputs.len(), 1, "input size inconsistent");
-
-        if exprs == self.exprs && inputs[0] == self.input {
-            return Ok(self.clone());
-        }
-
-        Ok(Self {
-            table_name: self.table_name.clone(),
-            exprs,
-            schema: self.schema.clone(),
-            input: inputs.swap_remove(0),
-        })
-    }
-
-    fn check_invariants(&self, _check: InvariantLevel, _plan: &LogicalPlan) -> Result<()> { Ok(()) }
-
-    fn necessary_children_exprs(&self, _output_columns: &[usize]) -> Option<Vec<Vec<usize>>> {
-        None
-    }
-
-    fn supports_limit_pushdown(&self) -> bool { false }
-}
-
-impl PartialEq for ClickHouseFunctionNode {
-    fn eq(&self, other: &Self) -> bool {
-        self.exprs == other.exprs && self.schema == other.schema && self.input == other.input
-    }
-}
-
-impl Eq for ClickHouseFunctionNode {}
-
-impl std::hash::Hash for ClickHouseFunctionNode {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.exprs.hash(state);
-        self.schema.hash(state);
-        self.input.hash(state);
-    }
-}
-
-impl PartialOrd for ClickHouseFunctionNode {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
-}
-
-impl Ord for ClickHouseFunctionNode {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Compare args element-wise
-        for (self_arg, other_arg) in self.exprs.iter().zip(other.exprs.iter()) {
-            let cmp = format!("{self_arg:?}").cmp(&format!("{other_arg:?}"));
-            if cmp != std::cmp::Ordering::Equal {
-                return cmp;
-            }
-        }
-        // Compare lengths if unequal
-        self.input.partial_cmp(&other.input).unwrap_or(std::cmp::Ordering::Equal)
-    }
-}
+// UserDefinedLogicalNodeCore implementation is now in pushdown_analyzer.rs
 
 /// Helper function to add a Vec of [`ClickHouseFunction`]s to the input schema
+///
+/// This preserves the original column order while replacing function-matched columns
+/// with their `ClickHouse` function equivalents.
+#[allow(dead_code)]
 fn merge_function_exprs_in_schema(
     funcs: Vec<ClickHouseFunction>,
     input: &TableScan,
 ) -> Result<(Vec<Expr>, DFSchema)> {
-    let (exprs, fields): (Vec<_>, Vec<_>) = input
-        .projected_schema
-        .iter()
-        .filter(|(table_ref, field)| {
-            !funcs
-                .iter()
-                .any(|func| &func.alias == field.name() && func.table.as_ref() == *table_ref)
-        })
-        .map(|(table_ref, field)| {
-            (
-                Expr::Column(Column {
-                    relation: table_ref.cloned(),
-                    name:     field.name().to_string(),
-                    spans:    Spans::new(),
-                }),
-                (table_ref.cloned(), Arc::clone(field)),
-            )
+    // Create a map of function aliases for quick lookup
+    let func_map: std::collections::HashMap<_, _> = funcs
+        .into_iter()
+        .map(|f| {
+            // TODO: Remove debug
+            eprintln!(
+                "Function mapping: alias={}, target_table={:?}",
+                f.function_alias,
+                f.target_table
+            );
+            (f.function_alias.clone(), f)
         })
         .collect();
-    // Create filtered projection schema
-    let filtered_schema =
-        DFSchema::new_with_metadata(fields, input.projected_schema.metadata().clone())?;
 
-    // Now handle functions
-    let (mut function_exprs, function_fields): (Vec<_>, Vec<_>) = funcs
-        .into_iter()
-        .map(|func| {
-            let field = func.field;
-            (
-                Expr::Alias(Alias {
-                    relation: Some(input.table_name.clone()),
-                    name:     field.name().to_string(),
-                    expr:     Box::new(Expr::ScalarFunction(func.func)),
-                    metadata: None,
-                }),
-                (Some(input.table_name.clone()), field),
-            )
-        })
-        .unzip();
+    // Process each field in the input schema, maintaining order
+    let mut all_exprs = Vec::new();
+    let mut all_fields = Vec::new();
 
-    // Merge schemas - NOTE: It's important the function schema is first, otherwise it won't work
-    let mut schema =
-        DFSchema::new_with_metadata(function_fields, input.projected_schema.metadata().clone())?;
-    schema.merge(&filtered_schema);
+    for (table_ref, field) in input.projected_schema.iter() {
+        // TODO: Remove debug
+        eprintln!(
+            "Checking field: table_ref={:?}, name={}, has_func={}",
+            table_ref,
+            field.name(),
+            func_map.contains_key(field.name())
+        );
 
-    // Add existing exprs
-    function_exprs.extend(exprs);
+        if let Some(func) = func_map.get(field.name()) {
+            // Replace this column with the function
+            all_exprs.push(Expr::Alias(Alias {
+                relation: Some(input.table_name.clone()),
+                name:     func.function_alias.clone(),
+                expr:     Box::new(func.inner_expr.clone()),
+                metadata: None,
+            }));
+            all_fields.push((Some(input.table_name.clone()), Arc::new(Field::new(
+                &func.function_alias,
+                func.return_type.clone(),
+                true, // nullable
+            ))));
+        } else {
+            // Keep the original column
+            all_exprs.push(Expr::Column(Column {
+                relation: table_ref.cloned(),
+                name:     field.name().to_string(),
+                spans:    Spans::new(),
+            }));
+            all_fields.push((table_ref.cloned(), Arc::clone(field)));
+        }
+    }
 
-    Ok((function_exprs, schema))
+    // Create the schema with proper ordering
+    let schema =
+        DFSchema::new_with_metadata(all_fields, input.projected_schema.metadata().clone())?;
+
+    Ok((all_exprs, schema))
 }
 
 // TODO: Decide whether to remove the following functions
 
-type FunctionExprs = (Vec<Expr>, Vec<(Option<TableReference>, FieldRef)>);
+// type FunctionExprs = (Vec<Expr>, Vec<(Option<TableReference>, FieldRef)>);
 
-/// Helper function to add a Vec of [`ClickHouseFunction`]s to the input schema
-#[expect(unused)]
-fn add_function_exprs_in_schema(
-    funcs: Vec<ClickHouseFunction>,
-    input: &TableScan,
-) -> FunctionExprs {
-    input
-        .projected_schema
-        .iter()
-        .map(|(table_ref, field)| {
-            (
-                Expr::Column(Column {
-                    relation: table_ref.cloned(),
-                    name:     field.name().to_string(),
-                    spans:    Spans::new(),
-                }),
-                (table_ref.cloned(), field.clone()),
-            )
-        })
-        .chain(funcs.into_iter().map(|func| {
-            let field = func.field;
-            (
-                Expr::Alias(Alias {
-                    relation: Some(input.table_name.clone()),
-                    name:     field.name().to_string(),
-                    expr:     Box::new(Expr::ScalarFunction(func.func)),
-                    metadata: None,
-                }),
-                (Some(input.table_name.clone()), field),
-            )
-        }))
-        .unzip()
-}
+// /// Helper function to add a Vec of [`ClickHouseFunction`]s to the input schema
+// #[expect(unused)]
+// fn add_function_exprs_in_schema(
+//     funcs: Vec<ClickHouseFunction>,
+//     input: &TableScan,
+// ) -> FunctionExprs {
+//     input
+//         .projected_schema
+//         .iter()
+//         .map(|(table_ref, field)| {
+//             (
+//                 Expr::Column(Column {
+//                     relation: table_ref.cloned(),
+//                     name:     field.name().to_string(),
+//                     spans:    Spans::new(),
+//                 }),
+//                 (table_ref.cloned(), Arc::clone(field)),
+//             )
+//         })
+//         .chain(funcs.into_iter().map(|func| {
+//             let field = func.field;
+//             (
+//                 Expr::Alias(Alias {
+//                     relation: Some(input.table_name.clone()),
+//                     name:     field.name().to_string(),
+//                     expr:     Box::new(Expr::ScalarFunction(func.func)),
+//                     metadata: None,
+//                 }),
+//                 (Some(input.table_name.clone()), field),
+//             )
+//         }))
+//         .unzip()
+// }
 
-/// Helper function to convert a Vec of [`ClickHouseFunction`]s to exprs and [`DFSchema`]
-#[expect(unused)]
-fn replace_function_exprs_in_schema(
-    funcs: Vec<ClickHouseFunction>,
-    input: &TableScan,
-) -> FunctionExprs {
-    input
-        .projected_schema
-        .iter()
-        .map(|(table_ref, field)| {
-            if let Some(func) = funcs
-                .iter()
-                .find(|f| f.projections.first().map(|c| c.name.as_str()) == Some(field.name()))
-            {
-                (table_ref.cloned(), Arc::clone(func.field()), Some(func.func().clone()))
-            } else {
-                (table_ref.cloned(), field.clone(), None)
-            }
-        })
-        .map(|(table_ref, field, func)| {
-            if let Some(func) = func {
-                (
-                    Expr::Alias(Alias {
-                        expr:     Box::new(Expr::ScalarFunction(func)),
-                        relation: table_ref.clone(),
-                        name:     field.name().to_string(),
-                        metadata: None,
-                    }),
-                    (table_ref, field),
-                )
-            } else {
-                (
-                    Expr::Column(Column {
-                        relation: table_ref.clone(),
-                        name:     field.name().to_string(),
-                        spans:    Spans::new(),
-                    }),
-                    (table_ref, field),
-                )
-            }
-        })
-        .unzip()
-}
+// TODO: Remove - or keep, not sure why this should be preserved
+// /// Helper function to convert a Vec of [`ClickHouseFunction`]s to exprs and [`DFSchema`]
+// #[expect(unused)]
+// fn replace_function_exprs_in_schema(
+//     funcs: Vec<ClickHouseFunction>,
+//     input: &TableScan,
+// ) -> FunctionExprs {
+//     input
+//         .projected_schema
+//         .iter()
+//         .map(|(table_ref, field)| {
+//             if let Some(func) = funcs
+//                 .iter()
+//                 .find(|f| f.projections.first().map(|c| c.name.as_str()) == Some(field.name()))
+//             {
+//                 (table_ref.cloned(), Arc::clone(func.field()), Some(func.func().clone()))
+//             } else {
+//                 (table_ref.cloned(), field.clone(), None)
+//             }
+//         })
+//         .map(|(table_ref, field, func)| {
+//             if let Some(func) = func {
+//                 (
+//                     Expr::Alias(Alias {
+//                         expr:     Box::new(Expr::ScalarFunction(func)),
+//                         relation: table_ref.clone(),
+//                         name:     field.name().to_string(),
+//                         metadata: None,
+//                     }),
+//                     (table_ref, field),
+//                 )
+//             } else {
+//                 (
+//                     Expr::Column(Column {
+//                         relation: table_ref.clone(),
+//                         name:     field.name().to_string(),
+//                         spans:    Spans::new(),
+//                     }),
+//                     (table_ref, field),
+//                 )
+//             }
+//         })
+//         .unzip()
+// }

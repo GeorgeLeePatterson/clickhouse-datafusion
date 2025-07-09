@@ -69,7 +69,9 @@ pub(crate) const ALL_PARAMS: &[&str; 16] = &[
 ];
 
 /// Helper function to parse a string into a vector of strings
-fn parse_param_vec(param: &str) -> Vec<String> { param.split(',').map(|s| s.to_string()).collect() }
+fn parse_param_vec(param: &str) -> Vec<String> {
+    param.split(',').map(ToString::to_string).collect()
+}
 
 /// Helper function to parse a string into a hashmap of strings -> strings
 fn parse_param_hashmap(param: &str) -> HashMap<String, String> {
@@ -79,14 +81,14 @@ fn parse_param_hashmap(param: &str) -> HashMap<String, String> {
         let key = parts.next();
         let value = parts.next();
         if let (Some(k), Some(v)) = (key, value) {
-            let _ = params.insert(k.to_string(), v.to_string());
+            drop(params.insert(k.to_string(), v.to_string()));
         }
     }
     params
 }
 
 /// Helper function to convert a vec of strings into a string param
-fn vec_to_param(param: Vec<String>) -> String { param.join(",") }
+fn vec_to_param(param: &[String]) -> String { param.join(",") }
 
 /// Wrapper for serialized client options
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,52 +129,53 @@ impl std::fmt::Display for ClientOption {
 
 /// [`crate::ClickHouseTableProviderFactory`] must receive all parameters as strings, this
 /// function is helpful to serialize the required options
+///
+/// # Errors
+/// - Returns an error if settings contain `ClientOption` keys
 pub fn pool_builder_to_params(
     endpoint: impl Into<String>,
     builder: &ArrowConnectionPoolBuilder,
 ) -> Result<ClientOptionParams> {
-    let mut params = HashMap::from_iter(
-        [
-            (ENDPOINT_PARAM, ClientOption::Value(endpoint.into())),
-            (USERNAME_PARAM, ClientOption::Value(builder.client_options().username.to_string())),
-            (PASSWORD_PARAM, ClientOption::Secret(builder.client_options().password.clone())),
-            (
-                DEFAULT_DATABASE_PARAM,
-                ClientOption::Value(builder.client_options().default_database.to_string()),
-            ),
-            (
-                COMPRESSION_PARAM,
-                ClientOption::Value(builder.client_options().compression.to_string()),
-            ),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v)),
-    );
+    let mut params = [
+        (ENDPOINT_PARAM, ClientOption::Value(endpoint.into())),
+        (USERNAME_PARAM, ClientOption::Value(builder.client_options().username.to_string())),
+        (PASSWORD_PARAM, ClientOption::Secret(builder.client_options().password.clone())),
+        (
+            DEFAULT_DATABASE_PARAM,
+            ClientOption::Value(builder.client_options().default_database.to_string()),
+        ),
+        (COMPRESSION_PARAM, ClientOption::Value(builder.client_options().compression.to_string())),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect::<HashMap<_, _>>();
 
     if let Some(domain) = builder.client_options().domain.as_ref() {
-        params.insert(DOMAIN_PARAM.into(), ClientOption::Value(domain.to_string()));
+        drop(params.insert(DOMAIN_PARAM.into(), ClientOption::Value(domain.to_string())));
     }
     if let Some(cafile) = builder.client_options().cafile.as_ref() {
-        params
-            .insert(CAFILE_PARAM.into(), ClientOption::Value(cafile.to_string_lossy().to_string()));
+        drop(params.insert(
+            CAFILE_PARAM.into(),
+            ClientOption::Value(cafile.to_string_lossy().to_string()),
+        ));
     }
     if builder.client_options().use_tls {
-        params.insert(USE_TLS_PARAM.into(), ClientOption::Value("true".to_string()));
+        drop(params.insert(USE_TLS_PARAM.into(), ClientOption::Value("true".to_string())));
     }
-
-    // TODO: Remove - uncomment this when clickhouse-arrow makes props pub
-    // if builder.client_options().ext.arrow.map(|a|
-    // a.strings_as_strings).unwrap_or_default() { .. }
-    params.insert(STRINGS_AS_STRINGS_PARAM.into(), ClientOption::Value("true".to_string()));
+    if builder.client_options().ext.arrow.is_some_and(|a| a.strings_as_strings) {
+        drop(
+            params.insert(STRINGS_AS_STRINGS_PARAM.into(), ClientOption::Value("true".to_string())),
+        );
+    }
 
     #[cfg(feature = "cloud")]
     if let Some(to) = builder.client_options().ext.cloud.timeout {
-        params.insert(CLOUD_TIMEOUT_PARAM.into(), ClientOption::Value(to.to_string()));
+        drop(params.insert(CLOUD_TIMEOUT_PARAM.into(), ClientOption::Value(to.to_string())));
     }
 
     #[cfg(feature = "cloud")]
     if builder.client_options().ext.cloud.wakeup {
-        params.insert(CLOUD_WAKEUP_PARAM.into(), ClientOption::Value("true".to_string()));
+        drop(params.insert(CLOUD_WAKEUP_PARAM.into(), ClientOption::Value("true".to_string())));
     }
 
     // Settings
@@ -191,16 +194,15 @@ pub fn pool_builder_to_params(
     Ok(ClientOptionParams(params))
 }
 
-pub fn params_to_pool_builder(
+/// Converts a `HashMap` of parameters to an `ArrowConnectionPoolBuilder`.
+///
+/// # Errors
+/// - Returns an error if the parameters are invalid.
+pub fn params_to_pool_builder<S: ::std::hash::BuildHasher>(
     endpoint: impl Into<Destination>,
-    params: &mut HashMap<String, String>,
+    params: &mut HashMap<String, String, S>,
     ignore_settings: bool,
 ) -> Result<ArrowConnectionPoolBuilder> {
-    // TODO: Remove
-    // // Endpoint
-    // let Some(endpoint) = params.remove(ENDPOINT_PARAM) else {
-    //     return exec_err!("Endpoint is required for ClickHouse");
-    // };
     let destination = endpoint.into();
     let endpoint = destination.to_string();
 
@@ -209,7 +211,7 @@ pub fn params_to_pool_builder(
     let password = params.remove(PASSWORD_PARAM).map(Secret::new).unwrap_or_default();
 
     // This is set to "default" since datafusion drives the schema. DDL's don't work otherwise
-    let _ = params.remove(DEFAULT_DATABASE_PARAM);
+    drop(params.remove(DEFAULT_DATABASE_PARAM));
     let default_database = "default";
 
     let domain = params.remove(DOMAIN_PARAM);
@@ -225,8 +227,9 @@ pub fn params_to_pool_builder(
         .unwrap_or_default();
     let strings_as_strings = params.remove(STRINGS_AS_STRINGS_PARAM).map(|s| s == "true");
     let arrow_options = strings_as_strings
-        .map(|s| ArrowOptions::default().with_strings_as_strings(s))
-        .unwrap_or(ArrowOptions::default().with_strings_as_strings(true));
+        .map_or(ArrowOptions::default().with_strings_as_strings(true), |s| {
+            ArrowOptions::default().with_strings_as_strings(s)
+        });
     #[cfg(feature = "cloud")]
     let cloud_timeout = if let Some(to) = params.remove(CLOUD_TIMEOUT_PARAM) {
         to.parse::<u64>().ok()
@@ -240,7 +243,7 @@ pub fn params_to_pool_builder(
     let pool_max_size = params.remove(POOL_MAX_SIZE_PARAM).and_then(|p| p.parse::<u32>().ok());
     let pool_min_idle = params.remove(POOL_MIN_IDLE_PARAM).and_then(|p| p.parse::<u32>().ok());
     let pool_test_on_checkout =
-        params.remove(POOL_TEST_ON_CHECK_OUT_PARAM).map(|s| s == "true").unwrap_or_default();
+        params.remove(POOL_TEST_ON_CHECK_OUT_PARAM).is_some_and(|s| s == "true");
     let pool_max_lifetime =
         params.remove(POOL_MAX_LIFETIME_PARAM).and_then(|p| p.parse::<u64>().ok());
     let pool_idle_timeout =
@@ -248,7 +251,7 @@ pub fn params_to_pool_builder(
     let pool_connection_timeout =
         params.remove(POOL_CONNECTION_TIMEOUT_PARAM).and_then(|p| p.parse::<u64>().ok());
     let pool_retry_connection =
-        params.remove(POOL_RETRY_CONNECTION_PARAM).map(|p| p == "true").unwrap_or_default();
+        params.remove(POOL_RETRY_CONNECTION_PARAM).is_some_and(|p| p == "true");
 
     // Settings
     let settings = if ignore_settings || params.is_empty() {
@@ -306,8 +309,11 @@ pub fn params_to_pool_builder(
 pub fn create_options_to_params(create_options: CreateOptions) -> ClientOptionParams {
     let params = HashMap::from_iter([
         (ENGINE_PARAM.into(), ClientOption::Value(create_options.engine)),
-        (ORDER_BY_PARAM.into(), ClientOption::Value(vec_to_param(create_options.order_by))),
-        (PRIMARY_KEYS_PARAM.into(), ClientOption::Value(vec_to_param(create_options.primary_keys))),
+        (ORDER_BY_PARAM.into(), ClientOption::Value(vec_to_param(&create_options.order_by))),
+        (
+            PRIMARY_KEYS_PARAM.into(),
+            ClientOption::Value(vec_to_param(&create_options.primary_keys)),
+        ),
         (
             PARTITION_BY_PARAM.into(),
             ClientOption::Value(create_options.partition_by.unwrap_or_default()),
@@ -325,9 +331,14 @@ pub fn create_options_to_params(create_options: CreateOptions) -> ClientOptionPa
     ClientOptionParams(params)
 }
 
-pub fn params_to_create_options(
-    params: &mut HashMap<String, String>,
-    column_defaults: &HashMap<String, Expr>,
+/// Creates a `CreateOptions` from 'params' (`HashMap<String, String>`) and 'defaults'
+/// (`HashMap<String, Expr>`).
+///
+/// # Errors
+/// - Returns an error if the engine is missing.
+pub fn params_to_create_options<S: ::std::hash::BuildHasher>(
+    params: &mut HashMap<String, String, S>,
+    column_defaults: &HashMap<String, Expr, S>,
 ) -> Result<CreateOptions> {
     let Some(engine) = params.remove(ENGINE_PARAM) else {
         return exec_err!("Missing engine for table");
@@ -356,7 +367,7 @@ pub fn params_to_create_options(
         .collect::<Result<HashMap<_, _>>>()?;
 
     if let Some(defs) = params.remove(DEFAULTS_PARAM) {
-        defaults.extend(parse_param_hashmap(&defs))
+        defaults.extend(parse_param_hashmap(&defs));
     }
 
     let options =
@@ -384,8 +395,8 @@ pub fn params_to_create_options(
 
 // Convert ast::Expr to ClickHouse default string
 pub(crate) fn ast_expr_to_clickhouse_default(expr: &ast::Expr) -> Result<String> {
-    match expr {
-        ast::Expr::Value(ast::ValueWithSpan { value, .. }) => match value {
+    if let ast::Expr::Value(ast::ValueWithSpan { value, .. }) = expr {
+        match value {
             ast::Value::SingleQuotedString(s) => {
                 if s.starts_with('\'') && s.ends_with('\'') {
                     Ok(s.to_string())
@@ -401,8 +412,9 @@ pub(crate) fn ast_expr_to_clickhouse_default(expr: &ast::Expr) -> Result<String>
             ast::Value::Boolean(b) => Ok(if *b { "1" } else { "0" }.to_string()),
             ast::Value::Null => Ok("NULL".to_string()),
             _ => plan_err!("Unsupported default value: {value:?}"),
-        },
-        _ => plan_err!("Unsupported default expression: {expr:?}"),
+        }
+    } else {
+        plan_err!("Unsupported default expression: {expr:?}")
     }
 }
 

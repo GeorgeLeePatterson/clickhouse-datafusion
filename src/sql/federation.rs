@@ -17,17 +17,22 @@ use futures_util::TryStreamExt;
 use super::{JoinPushDown, SqlTable};
 
 impl SqlTable {
-    fn create_federated_table_source(self: Arc<Self>) -> Result<Arc<dyn FederatedTableSource>> {
+    /// Create a federated table source for this table provider.
+    fn create_federated_table_source(self: Arc<Self>) -> Arc<dyn FederatedTableSource> {
         let table_ref = RemoteTableRef::from(self.table_reference.clone());
         let schema = self.schema();
         let fed_provider = Arc::new(SQLFederationProvider::new(self));
-        Ok(Arc::new(SQLTableSource::new_with_schema(fed_provider, table_ref, schema)))
+        Arc::new(SQLTableSource::new_with_schema(fed_provider, table_ref, schema))
     }
 
+    /// Create a federated table provider wrapping this table provider.
+    ///
+    /// # Errors
+    /// - Error if `create_federated_table_source` fails.
     pub fn create_federated_table_provider(
         self: Arc<Self>,
     ) -> Result<FederatedTableProviderAdaptor> {
-        let table_source = Self::create_federated_table_source(Arc::clone(&self))?;
+        let table_source = Self::create_federated_table_source(Arc::clone(&self));
         Ok(FederatedTableProviderAdaptor::new_with_provider(table_source, self))
     }
 }

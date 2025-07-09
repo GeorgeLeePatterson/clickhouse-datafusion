@@ -26,7 +26,7 @@ pub struct ClickHouseConnectionPool {
 }
 
 impl ClickHouseConnectionPool {
-    /// Create a new ClickHouse connection pool for use in `DataFusion`. The identifier is used in
+    /// Create a new `ClickHouse` connection pool for use in `DataFusion`. The identifier is used in
     /// the case of federation to determine if queries can be pushed down across two pools
     pub fn new(identifier: impl Into<String>, pool: bb8::Pool<ArrowConnectionManager>) -> Self {
         debug!("Creating new ClickHouse connection pool");
@@ -34,7 +34,10 @@ impl ClickHouseConnectionPool {
         Self { pool, join_push_down }
     }
 
-    // TODO: Docs
+    /// Create a new `ClickHouse` connection pool from a builder.
+    ///
+    /// # Errors
+    /// - Returns an error if the connection pool cannot be created.
     pub async fn from_pool_builder(builder: ArrowConnectionPoolBuilder) -> Result<Self> {
         let identifer = builder.connection_identifier();
 
@@ -55,6 +58,9 @@ impl ClickHouseConnectionPool {
     pub fn join_push_down(&self) -> JoinPushDown { self.join_push_down.clone() }
 
     /// Get a managed [`ArrowPoolConnection`] wrapped in a [`ClickHouseConnection`]
+    ///
+    /// # Errors
+    /// - Returns an error if the connection cannot be established.
     pub async fn connect(&self) -> Result<ClickHouseConnection<'_>> {
         let conn = self
             .pool
@@ -89,6 +95,9 @@ impl<'a> ClickHouseConnection<'a> {
     }
 
     /// Fetch the names of the tables in a schema (database).
+    ///
+    /// # Errors
+    /// - Returns an error if the tables cannot be fetched.
     pub async fn tables(&self, schema: &str) -> Result<Vec<String>> {
         debug!(schema, "Fetching tables");
         self.conn
@@ -99,6 +108,9 @@ impl<'a> ClickHouseConnection<'a> {
     }
 
     /// Fetch the names of the schemas (databases).
+    ///
+    /// # Errors
+    /// - Returns an error if the schemas cannot be fetched.
     pub async fn schemas(&self) -> Result<Vec<String>> {
         debug!("Fetching databases");
         self.conn
@@ -109,6 +121,9 @@ impl<'a> ClickHouseConnection<'a> {
     }
 
     /// Fetch the schema for a table
+    ///
+    /// # Errors
+    /// - Returns an error if the schema cannot be fetched.
     pub async fn get_schema(&self, table_reference: &TableReference) -> Result<SchemaRef> {
         debug!(%table_reference, "Fetching schema for table");
         let db = table_reference.schema();
@@ -132,6 +147,9 @@ impl<'a> ClickHouseConnection<'a> {
 
     /// Issues a query against `ClickHouse` and returns the result as an arrow
     /// [`SendableRecordBatchStream`] using the provided schema.
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails.
     pub async fn query_arrow(
         &self,
         sql: &str,
@@ -158,6 +176,9 @@ impl<'a> ClickHouseConnection<'a> {
     }
 
     /// Executes a statement against `ClickHouse` and returns the number of affected rows.
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails.
     pub async fn execute(&self, sql: &str, _params: &[()]) -> Result<u64, GenericError> {
         debug!(sql, "Executing query");
         self.conn

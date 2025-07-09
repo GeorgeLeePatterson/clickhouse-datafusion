@@ -8,6 +8,10 @@ use crate::connection::ClickHouseConnectionPool;
 use crate::utils;
 
 /// Create a database in the remote `ClickHouse` instance.
+///
+/// # Errors
+/// - Returns an error if the `ClickHouse` endpoint is unreachable
+/// - Returns an error if the `ClickHouse` database fails to be created
 pub async fn create_database(database: &str, pool: &ClickHouseConnectionPool) -> Result<()> {
     // Exit early if database is default
     if database == "default" {
@@ -28,6 +32,10 @@ pub async fn create_database(database: &str, pool: &ClickHouseConnectionPool) ->
 }
 
 /// Create a table in the remote `ClickHouse` instance.
+///
+/// # Errors
+/// - Returns an error if the `ClickHouse` endpoint is unreachable
+/// - Returns an error if the `ClickHouse` schema fails to be created
 pub async fn create_schema(
     table_ref: &TableReference,
     schema: &SchemaRef,

@@ -26,8 +26,8 @@ fn get_doc() -> &'static Documentation { &DOCUMENTATION }
 // TODO: Docs - explain how this can be used if the full custom ClickHouseQueryPlanner CANNOT be
 // used. This provides an alternative syntax for specifying clickhouse functions
 //
-/// [`ClickHouseFunc`] is an escape hatch to pass syntax that DataFusion does not support directly
-/// to ClickHouse.
+/// [`ClickHouseFunc`] is an escape hatch to pass syntax that `DataFusion` does not support directly
+/// to `ClickHouse`.
 #[derive(Debug)]
 pub struct ClickHouseFunc {
     signature: Signature,
@@ -39,6 +39,8 @@ impl Default for ClickHouseFunc {
 }
 
 impl ClickHouseFunc {
+    pub const ARG_LEN: usize = 2;
+
     pub fn new() -> Self {
         Self {
             signature: Signature::uniform(
@@ -54,7 +56,7 @@ impl ClickHouseFunc {
 impl ScalarUDFImpl for ClickHouseFunc {
     fn as_any(&self) -> &dyn Any { self }
 
-    fn name(&self) -> &str { "clickhouse_func" }
+    fn name(&self) -> &'static str { "clickhouse_func" }
 
     fn aliases(&self) -> &[String] { &self.aliases }
 
@@ -114,7 +116,7 @@ impl ScalarUDFImpl for ClickHouseFunc {
             // Extract syntax string from first argument
             if syntax.is_none() {
                 return internal_err!("Missing syntax argument");
-            };
+            }
 
             // Extract type string from second argument
             let Some(type_str) = data_type else {
@@ -142,29 +144,30 @@ impl ScalarUDFImpl for ClickHouseFunc {
 mod tests {
     use std::sync::Arc;
 
+    use datafusion::arrow;
     use datafusion::arrow::datatypes::*;
-    use datafusion::arrow::{self};
     use datafusion::prelude::SessionContext;
 
     #[tokio::test]
     async fn test_clickhouse_udf() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = SessionContext::new();
         ctx.register_udf(super::clickhouse_func_udf());
+
         let schema = SchemaRef::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, false),
+            Field::new("names", DataType::Utf8, false),
         ]));
 
         let provider =
             Arc::new(datafusion::datasource::MemTable::try_new(Arc::clone(&schema), vec![vec![
-                datafusion::arrow::record_batch::RecordBatch::try_new(schema, vec![
+                arrow::record_batch::RecordBatch::try_new(schema, vec![
                     Arc::new(arrow::array::Int32Array::from(vec![1])),
-                    Arc::new(arrow::array::StringArray::from(vec!["John"])),
+                    Arc::new(arrow::array::StringArray::from(vec!["John,Jon,J"])),
                 ])?,
             ]])?);
-        ctx.register_table("people", provider)?;
-        let sql = "SELECT name, clickhousefunc('splitByChar('','', other_names)', 'List(Utf8)') \
-                   FROM people";
+        drop(ctx.register_table("people", provider)?);
+        let sql =
+            "SELECT name, clickhousefunc('splitByChar('','', names)', 'List(Utf8)') FROM people";
         let df = ctx.sql(&format!("EXPLAIN {sql}")).await?;
         let results = df.collect().await?;
         println!("EXPLAIN: {results:?}");

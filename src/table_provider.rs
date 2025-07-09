@@ -29,14 +29,17 @@ pub struct ClickHouseTableProvider {
 }
 
 impl ClickHouseTableProvider {
-    /// Creates a new TableProvider, fetching the schema from ClickHouse if not provided.
+    /// Creates a new `TableProvide`r, fetching the schema from `ClickHouse` if not provided.
+    ///
+    /// # Errors
+    /// - Returns an error if the `SQLTable` creation fails.
     pub async fn try_new(pool: ClickHouseConnectionPool, table: TableReference) -> Result<Self> {
         let writer = pool.clone();
         let inner = SqlTable::new("clickhouse", pool, table.clone()).await?;
         Ok(Self { reader: inner, table, writer, exprs: None })
     }
 
-    /// Creates a new TableProvider with a pre-fetched schema.
+    /// Creates a new `TableProvider` with a pre-fetched schema.
     pub fn new_with_schema(
         pool: ClickHouseConnectionPool,
         table: TableReference,
@@ -47,7 +50,7 @@ impl ClickHouseTableProvider {
         Self { reader: inner, table, writer, exprs: None }
     }
 
-    /// Creates a new TableProvider with a pre-fetched schema and logical expressions
+    /// Creates a new `TableProvider` with a pre-fetched schema and logical expressions
     pub fn new_with_schema_and_exprs(
         pool: ClickHouseConnectionPool,
         table: TableReference,

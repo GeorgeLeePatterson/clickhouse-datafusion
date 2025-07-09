@@ -21,13 +21,34 @@ test-one test_name:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
      -F test-utils "{{ test_name }}" -- --nocapture --show-output
 
-test-e2e:
+test-integration test_name='':
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
-     --no-default-features -F test-utils --test "e2e" -- --nocapture --show-output
+     --no-default-features -F test-utils --test "e2e" "{{ test_name }}" -- --nocapture --show-output
+    CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
+     -F test-utils --test "e2e" "{{ test_name }}" -- --nocapture --show-output
 
-test-federation:
+test-e2e test_name='':
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
-     -F test-utils --test "federation_e2e" -- --nocapture --show-output
+     --no-default-features -F test-utils --test "e2e" "{{ test_name }}" -- --nocapture --show-output
+
+test-federation test_name='':
+    CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
+     -F test-utils --test "e2e" "{{ test_name }}"  -- --nocapture --show-output
 
 coverage:
-    cargo llvm-cov --html --ignore-filename-regex "(examples).*" --output-dir coverage -F test-utils --open
+    cargo llvm-cov clean
+    cargo llvm-cov --ignore-filename-regex "(examples).*" --no-default-features -F test-utils --no-report
+    cargo llvm-cov --ignore-filename-regex "(examples).*" -F test-utils --no-report
+    cargo llvm-cov report --html --output-dir coverage --open
+
+
+# TODO: Remove - testing
+test-analyzer-full:
+    RUST_LOG={{ LOG }} cargo test --no-default-features -F test-utils --test "analyzer" -- --nocapture --show-output
+    RUST_LOG={{ LOG }} cargo test -F test-utils --test "analyzer" -- --nocapture --show-output
+
+test-analyzer:
+    RUST_LOG={{ LOG }} cargo test --no-default-features -F test-utils --test "analyzer" -- --nocapture --show-output
+
+test-analyzer-federation:
+    RUST_LOG={{ LOG }} cargo test -F test-utils --test "analyzer" -- --nocapture --show-output

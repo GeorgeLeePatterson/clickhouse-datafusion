@@ -1,13 +1,10 @@
-use std::str::FromStr;
-
-use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
-use datafusion::common::internal_err;
-use datafusion::error::{DataFusionError, Result};
+use datafusion::arrow::datatypes::{DataType, FieldRef};
+use datafusion::common::{internal_err, not_impl_err};
+use datafusion::error::Result;
 use datafusion::logical_expr::{
     ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
     Volatility,
 };
-use datafusion::scalar::ScalarValue;
 
 pub const CLICKHOUSE_UDF_ALIASES: [&str; 4] =
     ["clickhouse", "clickhouse_udf", "clickhouse_pushdown", "clickhouse_pushdown_udf"];
@@ -53,17 +50,13 @@ impl ScalarUDFImpl for ClickHousePushdownUDF {
     }
 
     fn return_field_from_args(&self, args: ReturnFieldArgs<'_>) -> Result<FieldRef> {
-        if let Some(Some(ScalarValue::Utf8(Some(return_type_str)))) = &args.scalar_arguments.last()
-        {
-            let dt = DataType::from_str(return_type_str.as_str())
-                .map_err(|e| DataFusionError::Plan(format!("Invalid return type: {e}")))?;
-            Ok(Field::new(self.name(), dt, false).into())
-        } else {
-            Err(DataFusionError::Plan("Expected Utf8 literal for return type".into()))
-        }
+        super::extract_return_field_from_args(self.name(), &args)
     }
 
     fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        Err(DataFusionError::NotImplemented("clickhouse UDF is for planning only".into()))
+        not_impl_err!(
+            "ClickHouse UDF is for planning only, a syntax error may have occurred. Sometimes, \
+             ClickHouse functions need to be backticked"
+        )
     }
 }

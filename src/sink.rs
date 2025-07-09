@@ -71,7 +71,7 @@ impl DisplayAs for ClickHouseDataSink {
     fn fmt_as(
         &self,
         _t: datafusion::physical_plan::DisplayFormatType,
-        f: &mut fmt::Formatter,
+        f: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
         write!(f, "ClickHouseDataSink: table={}", self.table)
     }

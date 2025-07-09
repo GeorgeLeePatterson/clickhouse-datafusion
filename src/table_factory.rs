@@ -31,6 +31,8 @@ pub struct ClickHouseTableFactory {
 impl ClickHouseTableFactory {
     pub fn new(pool: ClickHouseConnectionPool) -> Self { Self { pool } }
 
+    /// # Errors
+    /// - Returns an error if the table provider cannot be created.
     pub async fn table_provider(
         &self,
         table_reference: TableReference,
@@ -45,37 +47,29 @@ impl ClickHouseTableFactory {
         );
 
         #[cfg(feature = "federation")]
-        let provider = Arc::new(
-            provider
-                .create_federated_table_provider()
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
-        );
+        let provider = Arc::new(provider.create_federated_table_provider());
 
         Ok(provider)
     }
 
-    // TODO: add cfg_attr(not(federated feature)) for non-async usage and useless result
-    pub async fn table_provider_from_schema(
+    /// Create a table provider from a schema.
+    ///
+    /// # Errors
+    /// - Returns an error only in the federation feature path, if federating fails.
+    pub fn table_provider_from_schema(
         &self,
         table_reference: TableReference,
         schema: SchemaRef,
-    ) -> Result<Arc<dyn TableProvider + 'static>> {
-        debug!(%table_reference, "Creating ClickHouse table provider");
+    ) -> Arc<dyn TableProvider + 'static> {
+        debug!(%table_reference, "Creating ClickHouse table provider from schema");
         let provider = Arc::new(ClickHouseTableProvider::new_with_schema(
             self.pool.clone(),
             table_reference,
             schema,
         ));
-
         #[cfg(feature = "federation")]
-        let provider = Arc::new(
-            provider
-                .create_federated_table_provider()
-                .inspect_err(|error| error!(?error, "Failed creating federated table provider"))
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
-        );
-
-        Ok(provider)
+        let provider = Arc::new(provider.create_federated_table_provider());
+        provider
     }
 }
 
@@ -89,6 +83,8 @@ impl ClickHouseTableProviderFactory {
     pub fn new() -> Self { Self { pools: Arc::new(Mutex::new(HashMap::default())) } }
 
     // TODO: Docs
+    /// # Errors
+    /// - Returns an error if creating the `ClickHouseConnectionPool` fails.
     pub async fn new_with_builder(
         endpoint: impl Into<Destination>,
         builder: ArrowConnectionPoolBuilder,
@@ -101,6 +97,9 @@ impl ClickHouseTableProviderFactory {
     // TODO: Docs
     /// Attach an existing [`ClickHouseConnectionPool`] to the factory by providing
     /// [`ClickHouseOptions`] which will be built into a [`ClickHouseConnectionPool`]
+    ///
+    /// # Errors
+    /// - Returns an error if creating the `ClickHouseConnectionPool` fails.
     pub async fn attach_pool_builder(
         &self,
         endpoint: impl Into<Destination>,
@@ -115,11 +114,8 @@ impl ClickHouseTableProviderFactory {
         // Create connection pool
         let pool = ClickHouseConnectionPool::from_pool_builder(builder).await?;
         debug!(?endpoint, "Connection pool created successfully");
-
-        {
-            self.pools.lock().insert(endpoint, pool.clone());
-        }
-
+        // Update map
+        drop(self.pools.lock().insert(endpoint, pool.clone()));
         Ok(pool)
     }
 
@@ -136,7 +132,7 @@ impl ClickHouseTableProviderFactory {
         if endpoint.is_empty() {
             error!("Endpoint is required for ClickHouse, received empty value");
             return exec_err!("Endpoint is required for ClickHouse");
-        };
+        }
 
         let destination = Destination::from(endpoint);
         if let Some(pool) = self.pools.lock().get(&destination) {
@@ -180,7 +176,7 @@ impl TableProviderFactory for ClickHouseTableProviderFactory {
         // Pull out database
         let database = name
             .schema()
-            .or(params.get(DEFAULT_DATABASE_PARAM).map(|x| x.as_str()))
+            .or(params.get(DEFAULT_DATABASE_PARAM).map(String::as_str))
             .unwrap_or("default")
             .to_string();
 
@@ -213,7 +209,6 @@ impl TableProviderFactory for ClickHouseTableProviderFactory {
         }
 
         // Create table provider
-        let factory = ClickHouseTableFactory::new(pool);
-        factory.table_provider_from_schema(name, schema).await
+        Ok(ClickHouseTableFactory::new(pool).table_provider_from_schema(name, schema))
     }
 }
