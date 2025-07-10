@@ -201,7 +201,7 @@ mod tests {
         Ok(())
     }
 
-    // #[expect(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     pub(super) async fn test_clickhouse_udf_pushdown(ch: Arc<ClickHouseContainer>) -> Result<()> {
         let db = "test_db_udfs";
 
@@ -243,104 +243,100 @@ mod tests {
         drop(mem_catalog.register_schema("internal", mem_schema)?);
         drop(ctx.register_catalog("memory", mem_catalog));
 
-        // // -----------------------------
-        // // Test projection with custom Analyzer
-        // let query = format!(
-        //     "
-        //     SELECT p.name
-        //         , m.event_id
-        //         , clickhouse(exp(p2.id), 'Float64')
-        //         , p2.names
-        //     FROM memory.internal.mem_events m
-        //     JOIN clickhouse.{db}.people p ON p.id = m.event_id
-        //     JOIN (
-        //         SELECT id, clickhouse(`arrayJoin`(names), 'Utf8') as names
-        //         FROM clickhouse.{db}.people2
-        //     ) p2 ON p.id = p2.id
-        //     "
-        // );
-        // let results = ctx
-        //     .sql(&query)
-        //     .await
-        //     .inspect_err(|error| error!("Error exe 1 query: {error}"))?
-        //     .collect()
-        //     .await?;
-        // arrow::util::pretty::print_batches(&results)?;
-        // info!(">>> Projection test custom Analyzer 1 passed");
+        // -----------------------------
+        // Test projection with custom Analyzer
+        let query = format!(
+            "SELECT p.name
+                , m.event_id
+                , clickhouse(exp(p2.id), 'Float64')
+                , p2.names
+            FROM memory.internal.mem_events m
+            JOIN clickhouse.{db}.people p ON p.id = m.event_id
+            JOIN (
+                SELECT id, clickhouse(`arrayJoin`(names), 'Utf8') as names
+                FROM clickhouse.{db}.people2
+            ) p2 ON p.id = p2.id
+            "
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error exe 1 query: {error}"))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        info!(">>> Projection test custom Analyzer 1 passed");
 
-        // // -----------------------------
-        // // Test projection with custom Analyzer
-        // let query = format!(
-        //     "
-        //     SELECT p.name
-        //         , m.event_id
-        //         , clickhouse(exp(p2.id), 'Float64')
-        //         , clickhouse(concat(p2.name, 'hello'), 'Utf8')
-        //     FROM memory.internal.mem_events m
-        //     JOIN clickhouse.{db}.people p ON p.id = m.event_id
-        //     JOIN clickhouse.{db}.people2 p2 ON p.id = p2.id
-        //     "
-        // );
-        // let results = ctx
-        //     .sql(&query)
-        //     .await
-        //     .inspect_err(|error| error!("Error exe 2 query: {}", error))?
-        //     .collect()
-        //     .await?;
-        // arrow::util::pretty::print_batches(&results)?;
-        // info!(">>> Projection test custom Analyzer 2 passed");
+        // -----------------------------
+        // Test projection with custom Analyzer
+        let query = format!(
+            "SELECT p.name
+                , m.event_id
+                , clickhouse(exp(p2.id), 'Float64')
+                , clickhouse(concat(p2.name, 'hello'), 'Utf8')
+            FROM memory.internal.mem_events m
+            JOIN clickhouse.{db}.people p ON p.id = m.event_id
+            JOIN clickhouse.{db}.people2 p2 ON p.id = p2.id
+            "
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error exe 2 query: {}", error))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        info!(">>> Projection test custom Analyzer 2 passed");
 
-        // // -----------------------------
-        // // Test projection with custom Analyzer
-        // let query = format!(
-        //     "
-        //     SELECT p.name
-        //         , m.event_id
-        //         , clickhouse(exp(p2.id), 'Float64')
-        //         , clickhouse(concat(p2.names, 'hello'), 'Utf8')
-        //     FROM memory.internal.mem_events m
-        //     JOIN clickhouse.{db}.people p ON p.id = m.event_id
-        //     JOIN (
-        //         SELECT id
-        //             , clickhouse(`arrayJoin`(names), 'Utf8') as names
-        //         FROM clickhouse.{db}.people2
-        //     ) p2 ON p.id = p2.id
-        //     "
-        // );
-        // let results = ctx
-        //     .sql(&query)
-        //     .await
-        //     .inspect_err(|error| error!("Error exe 3 query: {}", error))?
-        //     .collect()
-        //     .await?;
-        // arrow::util::pretty::print_batches(&results)?;
-        // info!(">>> Projection test custom Analyzer 3 passed");
+        // -----------------------------
+        // Test projection with custom Analyzer
+        let query = format!(
+            "SELECT p.name
+                , m.event_id
+                , clickhouse(exp(p2.id), 'Float64')
+                , clickhouse(concat(p2.names, 'hello'), 'Utf8')
+            FROM memory.internal.mem_events m
+            JOIN clickhouse.{db}.people p ON p.id = m.event_id
+            JOIN (
+                SELECT id
+                    , clickhouse(`arrayJoin`(names), 'Utf8') as names
+                FROM clickhouse.{db}.people2
+            ) p2 ON p.id = p2.id
+            "
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error exe 3 query: {}", error))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        info!(">>> Projection test custom Analyzer 3 passed");
 
-        // // -----------------------------
-        // // Test projection with custom Analyzer
-        // let query = format!(
-        //     "
-        //     SELECT p.name
-        //         , m.event_id
-        //         , clickhouse(exp(p2.id), 'Float64')
-        //         , concat(p2.names, 'hello')
-        //     FROM memory.internal.mem_events m
-        //     JOIN clickhouse.{db}.people p ON p.id = m.event_id
-        //     JOIN (
-        //         SELECT id
-        //             , clickhouse(`arrayJoin`(names), 'Utf8') as names
-        //         FROM clickhouse.{db}.people2
-        //     ) p2 ON p.id = p2.id
-        //     "
-        // );
-        // let results = ctx
-        //     .sql(&query)
-        //     .await
-        //     .inspect_err(|error| error!("Error exe 4 query: {}", error))?
-        //     .collect()
-        //     .await?;
-        // arrow::util::pretty::print_batches(&results)?;
-        // info!(">>> Projection test custom Analyzer 4 passed");
+        // -----------------------------
+        // Test projection with custom Analyzer
+        let query = format!(
+            "SELECT p.name
+                , m.event_id
+                , clickhouse(exp(p2.id), 'Float64')
+                , concat(p2.names, 'hello')
+            FROM memory.internal.mem_events m
+            JOIN clickhouse.{db}.people p ON p.id = m.event_id
+            JOIN (
+                SELECT id
+                    , clickhouse(`arrayJoin`(names), 'Utf8') as names
+                FROM clickhouse.{db}.people2
+            ) p2 ON p.id = p2.id
+            "
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error exe 4 query: {}", error))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        info!(">>> Projection test custom Analyzer 4 passed");
 
         // -----------------------------
         // Test HOF
@@ -368,27 +364,28 @@ mod tests {
         //     "SELECT id, clickhouse(exp(p2.id), 'Float64')
         //     FROM clickhouse.{db}.people2 as p2"
         // );
-        let query = format!(
-            "SELECT p.name
-                , m.event_id
-                , clickhouse(exp(p2.id), 'Float64')
-                , concat(p2.names, 'hello')
-            FROM memory.internal.mem_events m
-            JOIN clickhouse.{db}.people p ON p.id = m.event_id
-            JOIN (
-                SELECT id
-                    , clickhouse(`arrayJoin`(names), 'Utf8') as names
-                FROM clickhouse.{db}.people2
-            ) p2 ON p.id = p2.id"
-        );
-        let results = ctx
-            .sql(&query)
-            .await
-            .inspect_err(|error| error!("Error exe 1 query: {error}"))?
-            .collect()
-            .await?;
-        arrow::util::pretty::print_batches(&results)?;
-        info!(">>> HOF passed");
+        // let query = format!(
+        //     "SELECT p.name
+        //         , m.event_id
+        //         , clickhouse(exp(p2.id), 'Float64')
+        //         , concat(p2.names, 'hello')
+        //     FROM memory.internal.mem_events m
+        //     JOIN clickhouse.{db}.people p ON p.id = m.event_id
+        //     JOIN (
+        //         SELECT id
+        //             , clickhouse(`arrayJoin`(names), 'Utf8') as names
+        //         FROM clickhouse.{db}.people2
+        //     ) p2 ON p.id = p2.id"
+        // );
+        // let results = ctx
+        //     .sql(&query)
+        //     .await
+        //     .inspect_err(|error| error!("Error exe 1 query: {error}"))?
+        //     .collect()
+        //     .await?;
+        // arrow::util::pretty::print_batches(&results)?;
+        // info!(">>> HOF passed");
+
         Ok(())
 
         // TODO: Figure out how to use Higher Order Functions in ClickHouse

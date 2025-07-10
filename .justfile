@@ -40,15 +40,3 @@ coverage:
     cargo llvm-cov --ignore-filename-regex "(examples).*" --no-default-features -F test-utils --no-report
     cargo llvm-cov --ignore-filename-regex "(examples).*" -F test-utils --no-report
     cargo llvm-cov report --html --output-dir coverage --open
-
-
-# TODO: Remove - testing
-test-analyzer-full:
-    RUST_LOG={{ LOG }} cargo test --no-default-features -F test-utils --test "analyzer" -- --nocapture --show-output
-    RUST_LOG={{ LOG }} cargo test -F test-utils --test "analyzer" -- --nocapture --show-output
-
-test-analyzer:
-    RUST_LOG={{ LOG }} cargo test --no-default-features -F test-utils --test "analyzer" -- --nocapture --show-output
-
-test-analyzer-federation:
-    RUST_LOG={{ LOG }} cargo test -F test-utils --test "analyzer" -- --nocapture --show-output

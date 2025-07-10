@@ -1,9 +1,8 @@
 //! Various UDFs providing `DataFusion`'s sql parsing with some `ClickHouse` specific functionality.
 //!
-//! [`self::function::ClickHouseFunc`] is a sort of 'escape-hatch' to allow passing
-//! syntax directly to `ClickHouse` as SQL.
+//! [`self::function::ClickHouseFunc`] is a sort of 'escape-hatch' to allow passing syntax directly
+//! to `ClickHouse` as SQL.
 
-// pub mod analyzer;
 pub mod lambda;
 pub mod placeholder;
 pub mod plan_node;
@@ -11,7 +10,6 @@ pub mod planner;
 pub mod pushdown;
 pub mod pushdown_analyzer;
 pub mod simple;
-// pub mod visitor;
 
 use std::str::FromStr;
 

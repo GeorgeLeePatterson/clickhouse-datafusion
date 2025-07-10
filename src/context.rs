@@ -37,7 +37,7 @@ use datafusion::variable::VarType;
 use crate::udfs::placeholder::PlaceholderUDF;
 use crate::udfs::planner::ClickHouseExtensionPlanner;
 use crate::udfs::pushdown::{CLICKHOUSE_UDF_ALIASES, clickhouse_udf_pushdown_udf};
-use crate::udfs::pushdown_analyzer::ClickHousePushdownAnalyzer;
+use crate::udfs::pushdown_analyzer::ClickHouseFunctionPushdown;
 
 // TODO: Remove - docs
 // Convenience method for preparing a session context both with federation if the feature is enabled
@@ -67,7 +67,7 @@ pub fn prepare_session_context(
     } else {
         let mut analyzer_rules = state.analyzer().rules.clone();
         analyzer_rules.push(
-            Arc::new(ClickHousePushdownAnalyzer::new()) as Arc<dyn AnalyzerRule + Send + Sync>
+            Arc::new(ClickHouseFunctionPushdown::new()) as Arc<dyn AnalyzerRule + Send + Sync>
         );
         ctx.into_state_builder().with_analyzer_rules(analyzer_rules)
     };
@@ -182,14 +182,8 @@ impl ClickHouseSessionContext {
     pub async fn sql_with_options(&self, sql: &str, options: SQLOptions) -> Result<DataFrame> {
         let state = self.inner.state();
         let statement = state.sql_to_statement(sql, "ClickHouse")?;
-        // TODO: Remove
-        tracing::info!("1. Statement (state.sql_to_statement): {statement:#?}");
         let plan = self.statement_to_plan(&state, statement).await?;
-        // TODO: Remove
-        tracing::info!("2. Plan: {plan:#?}");
         options.verify_plan(&plan)?;
-        // TODO: Remove
-        tracing::info!("3. Plan Verified!");
         self.execute_logical_plan(plan).await
     }
 

@@ -8,7 +8,6 @@ use datafusion::execution::SessionState;
 use datafusion::logical_expr::{LogicalPlan, UserDefinedLogicalNode};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
-use tracing::debug;
 
 use super::plan_node::ClickHouseFunctionNode;
 use super::pushdown::CLICKHOUSE_FUNCTION_NODE_NAME;
@@ -34,14 +33,13 @@ impl ExtensionPlanner for ClickHouseExtensionPlanner {
                 .downcast_ref::<ClickHouseFunctionNode>()
                 .ok_or(plan_datafusion_err!("Failed to downcast to ClickHouseFunctionNode"))?;
 
-            let Some(&LogicalPlan::TableScan(scan)) = clickhouse_node.inputs().first() else {
+            let inputs = clickhouse_node.inputs();
+            let Some(&LogicalPlan::TableScan(scan)) = inputs.first() else {
                 return plan_err!("Expected a TableScan logical plan");
             };
 
             // Convert to TableProvider
             let provider = source_as_provider(&scan.source)?;
-            debug!("ClickHouseExtensionPlanner::plan_extension (SOURCE):\n\nsource={provider:?}\n");
-
             let provider = provider
                 .as_any()
                 .downcast_ref::<ClickHouseTableProvider>()

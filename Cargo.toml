@@ -115,7 +115,3 @@ debug = "full"
 [[test]]
 name = "e2e"
 required-features = ["test-utils"]
-
-[[test]]
-name = "analyzer"
-required-features = ["test-utils"]

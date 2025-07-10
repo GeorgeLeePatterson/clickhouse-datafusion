@@ -26,21 +26,6 @@ impl UnparserDialect for ClickHouseDialect {
         func_name: &str,
         args: &[Expr],
     ) -> Result<Option<ast::Expr>> {
-        // TODO: Remove
-        eprintln!(
-            "
-            ~~~~~~~~~~~~~~~~~~~~~~~~~
-            * Inside Unparser *
-
-            name = {func_name}
-
-            args = {args:?}
-            ~~~~~~~~~~~~~~~~~~~~~~~~~
-
-
-            "
-        );
-
         if CLICKHOUSE_FUNC_ALIASES.contains(&func_name) {
             if let Some(Expr::Literal(
                 ScalarValue::Utf8(Some(s))
