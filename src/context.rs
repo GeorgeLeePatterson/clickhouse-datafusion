@@ -321,6 +321,15 @@ impl ContextProvider for ClickHouseContextProvider {
             return Some(Arc::clone(func));
         }
 
+        // Check if this is a known aggregate or window function
+        // These should NOT be wrapped as placeholder UDFs
+        if self.state.aggregate_functions().contains_key(name) {
+            return None;
+        }
+        if self.state.window_functions().contains_key(name) {
+            return None;
+        }
+
         // Allow inner functions to parse as placeholder ScalarUDFs
         Some(Arc::new(ScalarUDF::new_from_impl(PlaceholderUDF::new(name))))
     }

@@ -9,7 +9,7 @@ use datafusion::config::ConfigOptions;
 #[cfg(not(feature = "federation"))]
 use datafusion::logical_expr::Extension;
 use datafusion::logical_expr::expr::ScalarFunction;
-use datafusion::logical_expr::{Expr, LogicalPlan};
+use datafusion::logical_expr::{Aggregate, Expr, LogicalPlan};
 use datafusion::optimizer::analyzer::AnalyzerRule;
 use datafusion::scalar::ScalarValue;
 use datafusion::sql::TableReference;
@@ -145,31 +145,8 @@ impl FunctionCollector {
             _ => return Ok(()),
         };
 
-        let inner_alias = if let Expr::ScalarFunction(ScalarFunction { func, args }) = &inner_expr {
-            func.display_name(
-                &args
-                    .iter()
-                    .map(|arg| {
-                        arg.clone()
-                            .transform_up(|e| match e {
-                                Expr::Column(c) => Ok(Transformed::yes(Expr::Column(
-                                    Column::new_unqualified(c.name),
-                                ))),
-                                _ => Ok(Transformed::no(e)),
-                            })
-                            // Safe to unwrap, no errors thrown
-                            .unwrap()
-                            .data
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap_or(func.name().to_string())
-        } else {
-            let alias = format!("ch_func_{}", self.next_id);
-            self.next_id += 1;
-            alias
-        };
-        let alias = format!("clickhouse({inner_alias})");
+        // Generate an alias that matches how DataFusion will display the expression
+        let alias = format!("{}", Expr::ScalarFunction(func.clone()));
 
         // Resolve table for grouping purposes only - this resolves aliases to actual tables
         let table_name = self.resolve_table(&inner_expr);
@@ -355,6 +332,45 @@ impl PlanTransformer {
                     }
                 }
 
+                LogicalPlan::Aggregate(agg) => {
+                    // For aggregates, we need to use the input schema (not the aggregate's output schema)
+                    // when transforming group_by expressions
+                    let input_schema = Arc::clone(agg.input.schema());
+                    
+                    // Transform group by expressions
+                    let transformed_group_exprs: Result<Vec<_>> = agg
+                        .group_expr
+                        .iter()
+                        .map(|expr| self.transform_expr(expr.clone(), &input_schema))
+                        .collect();
+                    let transformed_group_exprs = transformed_group_exprs?;
+                    
+                    // Transform aggregate expressions
+                    let transformed_agg_exprs: Result<Vec<_>> = agg
+                        .aggr_expr
+                        .iter()
+                        .map(|expr| self.transform_expr(expr.clone(), &input_schema))
+                        .collect();
+                    let transformed_agg_exprs = transformed_agg_exprs?;
+                    
+                    let group_transformed = transformed_group_exprs.iter().any(|t| t.transformed);
+                    let agg_transformed = transformed_agg_exprs.iter().any(|t| t.transformed);
+                    
+                    if group_transformed || agg_transformed {
+                        let new_group_exprs: Vec<_> = transformed_group_exprs.into_iter().map(|t| t.data).collect();
+                        let new_agg_exprs: Vec<_> = transformed_agg_exprs.into_iter().map(|t| t.data).collect();
+                        
+                        let new_agg = LogicalPlan::Aggregate(Aggregate::try_new(
+                            Arc::clone(&agg.input),
+                            new_group_exprs,
+                            new_agg_exprs,
+                        )?);
+                        let recomputed = new_agg.recompute_schema()?;
+                        Ok(Transformed::yes(recomputed))
+                    } else {
+                        Ok(Transformed::no(LogicalPlan::Aggregate(agg)))
+                    }
+                }
                 _ => {
                     // For other nodes, we need to transform expressions with the proper schema
                     // context
@@ -417,9 +433,39 @@ impl PlanTransformer {
 
 fn functions_match(f1: &ScalarFunction, expr: &Expr) -> bool {
     if let Expr::ScalarFunction(f2) = expr {
-        f1.args.len() == f2.args.len() && f1.args.iter().zip(&f2.args).all(|(a, b)| a == b)
+        // Both must be clickhouse functions
+        if !is_clickhouse_function(f1) || !is_clickhouse_function(f2) {
+            return false;
+        }
+        
+        // Both must have at least 2 args (inner expr + type)
+        if f1.args.len() < 2 || f2.args.len() < 2 {
+            return false;
+        }
+        
+        // Compare the inner expressions, normalizing qualifiers
+        expressions_match_ignoring_qualifiers(&f1.args[0], &f2.args[0])
     } else {
         false
+    }
+}
+
+/// Compare two expressions ignoring column qualifiers
+fn expressions_match_ignoring_qualifiers(e1: &Expr, e2: &Expr) -> bool {
+    match (e1, e2) {
+        (Expr::Column(c1), Expr::Column(c2)) => c1.name == c2.name,
+        (Expr::ScalarFunction(f1), Expr::ScalarFunction(f2)) => {
+            f1.name() == f2.name()
+                && f1.args.len() == f2.args.len()
+                && f1.args.iter().zip(&f2.args).all(|(a1, a2)| expressions_match_ignoring_qualifiers(a1, a2))
+        }
+        (Expr::Literal(l1, _), Expr::Literal(l2, _)) => l1 == l2,
+        (Expr::BinaryExpr(b1), Expr::BinaryExpr(b2)) => {
+            b1.op == b2.op
+                && expressions_match_ignoring_qualifiers(&b1.left, &b2.left)
+                && expressions_match_ignoring_qualifiers(&b1.right, &b2.right)
+        }
+        _ => e1 == e2,
     }
 }
 
