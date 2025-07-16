@@ -105,4 +105,12 @@ test udfs ... ok
 
 ## CLAUDE.md
 
-Left as a convenience for other contributers if they use Claude to write code.
+Left as a convenience for other contributers if they use Claude to write code, save you some tokens.
+
+# TODO: Remove
+
+Tasks:
+
+1. Do we need to handle aggs separately? Or can this logic be applied to all expressions?
+2. The special handling for GROUP BY in pushdown_analyzer around line 531. Is this necessary?
+3. There needs to be tree sitter and lsp tools available to ai. Figure this out

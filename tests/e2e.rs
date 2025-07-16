@@ -6,7 +6,7 @@ const TRACING_DIRECTIVES: &[(&str, &str)] = &[
     ("testcontainers", "debug"),
     ("hyper", "error"),
     // --
-    // ("clickhouse_arrow", "error"),
+    ("clickhouse_arrow", "error"),
     // ("datafusion", "trace"),
 ];
 
@@ -25,6 +25,10 @@ e2e_test!(insert, test_insert, TRACING_DIRECTIVES, None);
 // Test clickhouse udf pushdown
 #[cfg(feature = "test-utils")]
 e2e_test!(err => clickhouse_udf, tests::test_clickhouse_udf_pushdown, TRACING_DIRECTIVES, None);
+
+// Test clickhouse udf pushdown
+#[cfg(feature = "test-utils")]
+e2e_test!(err => structure, tests::test_structure, TRACING_DIRECTIVES, None);
 
 // -- FEDERATION --
 
@@ -196,6 +200,73 @@ mod tests {
         }
 
         eprintln!(">> Test insert completed");
+
+        Ok(())
+    }
+
+    // TODO: Remove - for observing logical plan structure only
+    pub(super) async fn test_structure(ch: Arc<ClickHouseContainer>) -> Result<()> {
+        let db = "test_db_structure";
+
+        // Initialize session context
+        let ctx = SessionContext::new();
+
+        // IMPORTANT! If federation is enabled, federate the context
+        #[cfg(feature = "federation")]
+        let ctx = ctx.federate();
+
+        // -----------------------------
+        // Registering UDF Optimizer and UDF Pushdown
+        let ctx = ClickHouseSessionContext::from(ctx);
+
+        let builder = common::helpers::create_builder(&ctx, &ch).await?;
+        let clickhouse = common::helpers::setup_test_tables(builder, db, &ctx).await?;
+
+        // Insert test data (people & people2)
+        let clickhouse = common::helpers::insert_test_data(clickhouse, db, &ctx).await?;
+
+        // -----------------------------
+        // Refresh catalog
+        let _catalog_provider = clickhouse.build(&ctx).await?;
+
+        // -----------------------------
+        //
+        // Add in-memory table
+        let mem_schema =
+            Arc::new(Schema::new(vec![Field::new("event_id", DataType::Int32, false)]));
+        let mem_table =
+            Arc::new(datafusion::datasource::MemTable::try_new(Arc::clone(&mem_schema), vec![
+                vec![arrow::record_batch::RecordBatch::try_new(mem_schema, vec![Arc::new(
+                    arrow::array::Int32Array::from(vec![1]),
+                )])?],
+            ])?);
+        let mem_catalog = Arc::new(MemoryCatalogProvider::new());
+        let mem_schema = Arc::new(MemorySchemaProvider::new());
+        drop(mem_schema.register_table("mem_events".into(), mem_table)?);
+        drop(mem_catalog.register_schema("internal", mem_schema)?);
+        drop(ctx.register_catalog("memory", mem_catalog));
+
+        let query = format!(
+            "SELECT p3.name, exp(p3.id)
+            FROM (
+                SELECT p1.name, p2.name, p1.id
+                FROM (
+                    SELECT id, name FROM clickhouse.{db}.people
+                ) p1
+                JOIN (
+                    SELECT id, name FROM clickhouse.{db}.people2
+                ) p2 ON p1.id = p2.id
+            ) p3
+            "
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error exe 1 query: {error}"))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        info!(">>> Projection test custom Analyzer 1 passed");
 
         Ok(())
     }
@@ -452,17 +523,35 @@ mod tests {
         info!(">>> CTE with cross-references test passed");
 
         // -----------------------------
+        // Test simple clickhouse function without aggregation first
+        let query = format!(
+            "SELECT
+                p.id,
+                p.name,
+                clickhouse(`toString`(mod(p.id, 2)), 'Utf8') as id_mod
+            FROM clickhouse.{db}.people p"
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error simple clickhouse query: {}", error))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        info!(">>> Simple clickhouse function test passed");
+
+        // -----------------------------
         // Test aggregation over clickhouse function results
         // NOTE: This test fails because the analyzer exposes underlying columns
         // even when they're wrapped in clickhouse functions, causing GROUP BY validation issues
         let query = format!(
             "SELECT
-                clickhouse(mod(p.id, 2), 'Int32') as id_mod,
-                COUNT(*) as total,
+                clickhouse(`toString`(mod(p.id, 2)), 'Utf8') as id_mod,
+                COUNT(p.id) as total,
                 MAX(clickhouse(exp(p.id), 'Float64')) as max_exp,
                 STRING_AGG(p.name, ',') as all_names
             FROM clickhouse.{db}.people p
-            GROUP BY clickhouse(mod(p.id, 2), 'Int32')"
+            GROUP BY clickhouse(`toString`(mod(p.id, 2)), 'Utf8')"
         );
         let results = ctx
             .sql(&query)

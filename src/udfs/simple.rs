@@ -140,7 +140,7 @@ impl ScalarUDFImpl for ClickHouseFunc {
     fn documentation(&self) -> Option<&Documentation> { Some(get_doc()) }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-utils"))]
 mod tests {
     use std::sync::Arc;
 

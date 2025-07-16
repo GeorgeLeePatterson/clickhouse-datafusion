@@ -12,6 +12,7 @@ use datafusion::logical_expr::{
 use datafusion::optimizer::push_down_filter::replace_cols_by_name;
 use datafusion::prelude::Expr;
 use datafusion::sql::TableReference;
+use tracing::debug;
 
 use super::pushdown::CLICKHOUSE_FUNCTION_NODE_NAME;
 use super::pushdown_analyzer::ClickHouseFunction;
@@ -155,13 +156,29 @@ fn build_schema_and_exprs(
 
     // Process each field in the input schema
     for (table_ref, field) in input.projected_schema.iter() {
+        // Check if this field is one of our pushed functions
         if let Some(func) = func_map.get(field.name()) {
+            debug!("Found pushed function field: {} -> {}", field.name(), func.function_alias);
             // Rewrite the expression using the replace_map (following DataFusion pattern)
             let rewritten_expr = if replace_map.is_empty() {
                 func.inner_expr.clone()
             } else {
                 replace_cols_by_name(func.inner_expr.clone(), &replace_map)?
             };
+
+            // TODO: Remove
+            eprintln!(
+                "-------------
+                Field name = {}
+                Table = {table_ref:?}
+
+                Original function = {func:?}
+
+                Rewritten expression = {rewritten_expr:?}
+
+                ",
+                field.name()
+            );
 
             // Replace this column with the unwrapped inner function
             all_exprs.push(Expr::Alias(Alias {
@@ -247,38 +264,5 @@ impl PartialOrd for ClickHouseFunctionNode {
 impl Ord for ClickHouseFunctionNode {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.table_name.cmp(&other.table_name).then_with(|| self.functions.cmp(&other.functions))
-    }
-}
-
-// Implement Hash for ClickHouseFunction
-impl std::hash::Hash for ClickHouseFunction {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.function_alias.hash(state);
-        self.return_type.hash(state);
-        self.target_table.hash(state);
-        // Note: We don't hash expressions as they don't implement Hash
-    }
-}
-
-impl PartialEq for ClickHouseFunction {
-    fn eq(&self, other: &Self) -> bool {
-        self.function_alias == other.function_alias
-            && self.return_type == other.return_type
-            && self.target_table == other.target_table
-            && self.original_expr == other.original_expr
-    }
-}
-
-impl Eq for ClickHouseFunction {}
-
-impl PartialOrd for ClickHouseFunction {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
-}
-
-impl Ord for ClickHouseFunction {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.function_alias
-            .cmp(&other.function_alias)
-            .then_with(|| self.target_table.cmp(&other.target_table))
     }
 }

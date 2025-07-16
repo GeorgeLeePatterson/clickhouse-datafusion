@@ -1,11 +1,13 @@
 #![doc = include_str!("../README.md")]
 mod builders;
 mod catalog_provider;
+pub mod column_lineage;
 mod connection;
 mod context;
 pub mod dialect;
 #[cfg(feature = "federation")]
 pub mod federation;
+pub mod function_collector;
 pub mod prelude;
 mod sink;
 pub mod sql;
