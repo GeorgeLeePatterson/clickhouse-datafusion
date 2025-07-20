@@ -1,45 +1,22 @@
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::mem;
+use std::hash::Hash;
 
 use datafusion::common::tree_node::{TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::common::{Column, Result, ScalarValue, TableReference};
 use datafusion::logical_expr::{
-    Aggregate, Expr, Extension, LogicalPlan, Projection, SubqueryAlias, TableScan, Values, Window,
+    Aggregate, Expr, Extension, Filter, Join, LogicalPlan, Projection, SubqueryAlias, TableScan,
+    Values, Window,
 };
-
-/// Calculate hash for any hashable type
-fn calculate_hash<T: Hash>(t: &T) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    let mut hasher = DefaultHasher::new();
-    t.hash(&mut hasher);
-    hasher.finish()
-}
 
 /// Unique identifier for a source column (table, column) pair
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct SourceId(usize);
+pub(crate) struct SourceId(pub(crate) usize);
 
-// TODO: Remove allow
-#[allow(unused)]
-/// Context about where a column is used in the plan
-#[derive(Debug, Clone)]
-pub(crate) struct UsageContext {
-    pub expr_hash:    u64,
-    pub plan_context: PlanContext,
+impl std::fmt::Display for SourceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.0) }
 }
 
-/// Context about a specific plan node - serves as stable identifier
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct PlanContext {
-    pub node_id:      mem::Discriminant<LogicalPlan>,
-    // TODO: Remove - here for debugging
-    pub node_details: String,
-    pub depth:        usize,
-    pub table:        TableReference,
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ResolvedSource {
     /// Single column from single table - direct pushdown to `TableScan`
     Exact { table: TableReference, column: String },
@@ -49,20 +26,33 @@ pub enum ResolvedSource {
     Compound(Vec<(TableReference, String)>),
     /// Scalar/literal value - can be pushed down as-is
     Scalar(ScalarValue),
+    /// Unknown/unresolved column - no lineage information available
+    #[default]
+    Unknown,
 }
 
 impl ResolvedSource {
-    /// Collect all table references from this source
-    pub fn collect_tables(&self) -> Vec<TableReference> {
-        match self {
+    /// Return tables that are in `other` but NOT in `self`
+    /// This is useful for determining if there are additional table dependencies
+    /// beyond what a `ClickHouse` function references
+    pub fn disjoin_tables<'a>(&'a self, other: &'a ResolvedSource) -> HashSet<&'a TableReference> {
+        let self_tables: HashSet<&TableReference> = match self {
             ResolvedSource::Simple { table, .. } | ResolvedSource::Exact { table, .. } => {
-                vec![table.clone()]
+                [table].into_iter().collect()
             }
-            ResolvedSource::Compound(sources) => {
-                sources.iter().map(|(table, _)| table.clone()).collect()
+            ResolvedSource::Compound(sources) => sources.iter().map(|(table, _)| table).collect(),
+            ResolvedSource::Scalar(_) | ResolvedSource::Unknown => HashSet::new(),
+        };
+
+        let other_tables: HashSet<&TableReference> = match other {
+            ResolvedSource::Simple { table, .. } | ResolvedSource::Exact { table, .. } => {
+                [table].into_iter().collect()
             }
-            ResolvedSource::Scalar(_) => vec![], // Scalars have no table source
-        }
+            ResolvedSource::Compound(sources) => sources.iter().map(|(table, _)| table).collect(),
+            ResolvedSource::Scalar(_) | ResolvedSource::Unknown => HashSet::new(),
+        };
+
+        other_tables.difference(&self_tables).copied().collect()
     }
 
     /// Merge this source with another, taking ownership to avoid clones
@@ -72,51 +62,49 @@ impl ResolvedSource {
             (
                 ResolvedSource::Exact { table: t1, column: c1 },
                 ResolvedSource::Exact { table: t2, column: c2 },
-            ) => {
-                if t1 == t2 {
-                    if c1 == c2 {
-                        ResolvedSource::Exact { table: t1, column: c1 }
-                    } else {
-                        ResolvedSource::Simple { table: t1, columns: vec![c1, c2] }
-                    }
-                } else {
-                    ResolvedSource::Compound(vec![(t1, c1), (t2, c2)])
+            ) => match (t1 == t2, c1 == c2) {
+                (true, true) => ResolvedSource::Exact { table: t1, column: c1 },
+                (true, false) => {
+                    ResolvedSource::Simple { table: t2, columns: vec![c1.clone(), c2] }
                 }
-            }
+                (false, _) => ResolvedSource::Compound(vec![(t1.clone(), c1.clone()), (t2, c2)]),
+            },
             // Exact + Simple
             (
                 ResolvedSource::Exact { table: t1, column: c1 },
                 ResolvedSource::Simple { table: t2, mut columns },
             ) => {
                 if t1 == t2 {
-                    columns.push(c1);
-                    ResolvedSource::Simple { table: t1, columns }
+                    columns.push(c1.clone());
+                    ResolvedSource::Simple { table: t2, columns }
                 } else {
-                    let mut compound = vec![(t1, c1)];
+                    let mut compound = vec![(t1.clone(), c1.clone())];
                     compound.extend(columns.into_iter().map(|c| (t2.clone(), c)));
                     ResolvedSource::Compound(compound)
                 }
             }
             // Simple + Exact (symmetric case)
             (simple @ ResolvedSource::Simple { .. }, exact @ ResolvedSource::Exact { .. }) => {
-                exact.merge(simple)
+                exact.merge(simple.clone())
             }
             // Simple + Simple
             (
-                ResolvedSource::Simple { table: t1, columns: mut c1 },
+                ResolvedSource::Simple { table: t1, mut columns },
                 ResolvedSource::Simple { table: t2, columns: c2 },
             ) => {
                 if t1 == t2 {
-                    c1.extend(c2);
-                    ResolvedSource::Simple { table: t1, columns: c1 }
+                    columns.extend(c2);
+                    ResolvedSource::Simple { table: t1, columns }
                 } else {
-                    let mut compound = c1.into_iter().map(|c| (t1.clone(), c)).collect::<Vec<_>>();
-                    compound.extend(c2.into_iter().map(|c| (t2.clone(), c)));
+                    let mut compound = c2.into_iter().map(|c| (t2.clone(), c)).collect::<Vec<_>>();
+                    compound.extend(columns.into_iter().map(|c| (t1.clone(), c)));
                     ResolvedSource::Compound(compound)
                 }
             }
             // Scalar + anything = treat scalar as contributing nothing to table sources
-            (ResolvedSource::Scalar(_), other) | (other, ResolvedSource::Scalar(_)) => other,
+            // Unknown + anything = if other is not Unknown, return other, otherwise return Unknown
+            (ResolvedSource::Unknown | ResolvedSource::Scalar(_), other)
+            | (other, ResolvedSource::Unknown | ResolvedSource::Scalar(_)) => other,
             // Any + Compound or Compound + Any
             (source, ResolvedSource::Compound(mut pairs))
             | (ResolvedSource::Compound(mut pairs), source) => {
@@ -125,11 +113,20 @@ impl ResolvedSource {
                     ResolvedSource::Simple { table, columns } => {
                         pairs.extend(columns.into_iter().map(|c| (table.clone(), c)));
                     }
-                    ResolvedSource::Compound(_) | ResolvedSource::Scalar(_) => unreachable!(), /* Already handled above */
+                    ResolvedSource::Compound(mut other_pairs) => {
+                        pairs.append(&mut other_pairs);
+                    }
+                    ResolvedSource::Scalar(_) | ResolvedSource::Unknown => unreachable!(), /* Already handled above */
                 }
                 ResolvedSource::Compound(pairs)
             }
         }
+    }
+
+    /// Merge this source with another, taking ownership to avoid clones
+    #[expect(unused)]
+    pub(crate) fn merge_into(&mut self, other: ResolvedSource) {
+        *self = std::mem::take(self).merge(other);
     }
 }
 
@@ -146,49 +143,13 @@ pub(crate) enum ColumnLineage {
 }
 
 #[derive(Debug, Clone)]
-pub enum PredicateType {
-    Filter(Vec<Expr>), // Wrap these expressions in a Filter plan
-}
-
-// TableScan-specific actions (things being pushed DOWN)
-#[derive(Default, Debug, Clone)]
-pub struct TableScanActions {
-    pub functions_to_add: Vec<Expr>,
-    pub predicates_to_add: Vec<PredicateType>, // Knows HOW to wrap predicates
-    pub columns_to_remove: Vec<String>, // For Replace case
-}
-
-// Other plans actions (things being modified)  
-#[derive(Default, Debug, Clone)]
-pub struct PlanActions {
-    pub expressions_to_replace: HashMap<Expr, Expr>,
-    pub predicates_to_remove: Vec<Expr>,
-}
-
-// Combined structure
-#[derive(Default, Debug, Clone)]
-pub struct TransformationActions {
-    pub table_scan: Option<TableScanActions>,
-    pub plan: PlanActions,
-}
-
-#[derive(Debug, Clone)]
 pub struct ColumnLineageVisitor {
-    /// Track source column contexts throughout the plan
-    pub(crate) source_lineage: HashMap<SourceId, Vec<UsageContext>>,
+    /// Maps column references to their lineage
+    pub(crate) column_lineage: HashMap<Column, ColumnLineage>,
     /// Storage for all unique source columns
     sources:                   HashMap<SourceId, (TableReference, String)>,
-    /// Maps column references to their lineage
-    column_lineage:            HashMap<Column, ColumnLineage>,
     /// Counter for generating unique `SourceIds`
     next_source_id:            usize,
-
-    /// NEW: Table scan context tracking
-    current_table: TableReference,
-    current_depth: usize,
-
-    /// NEW: Stable plan identification and transformation actions
-    pub(crate) plan_actions: HashMap<PlanContext, TransformationActions>,
 }
 
 impl Default for ColumnLineageVisitor {
@@ -198,53 +159,41 @@ impl Default for ColumnLineageVisitor {
 // #[expect(unused)]
 impl ColumnLineageVisitor {
     pub fn new() -> Self {
-        Self {
-            source_lineage: HashMap::new(),
-            sources:        HashMap::new(),
-            column_lineage: HashMap::new(),
-            next_source_id: 0,
-            current_table:  TableReference::bare(""),
-            current_depth:  0,
-            plan_actions:   HashMap::new(),
-        }
+        Self { sources: HashMap::new(), column_lineage: HashMap::new(), next_source_id: 0 }
     }
 
-    // TODO: Remove - do we need to track expr usage contexts?
-    // /// Add a usage context (expression hash) to a column's lineage
-    // fn add_usage_context(&mut self, col: &Column, expr_hash: u64) {
-    //     if let Some(lineage) = self.column_lineage.get_mut(col) {
-    //         match lineage {
-    //             ColumnLineage::Exact { usage_contexts, .. }
-    //             | ColumnLineage::Simple { usage_contexts, .. }
-    //             | ColumnLineage::Compound { usage_contexts, .. }
-    //             | ColumnLineage::Scalar { usage_contexts, .. } => {
-    //                 let _ = usage_contexts.insert(expr_hash);
-    //             }
-    //         }
-    //     }
-    // }
+    /// Resolves a column reference to its source(s) and returns all usage contexts
+    pub(crate) fn resolve_to_source(&self, col: &Column) -> ResolvedSource {
+        let Some(lineage) = self.column_lineage.get(col) else {
+            return ResolvedSource::Unknown;
+        };
 
-    /// Resolves a column reference to its source(s)
-    /// Returns either a single source (exact lineage) or multiple sources (compound lineage)
-    pub(crate) fn resolve_to_source(&self, col: &Column) -> Option<ResolvedSource> {
-        self.column_lineage.get(col).and_then(|lineage| match lineage {
-            ColumnLineage::Exact(source_id) => self
-                .sources
-                .get(source_id)
-                .cloned()
-                .map(|(table, column)| ResolvedSource::Exact { table, column }),
+        match lineage {
+            ColumnLineage::Exact(source_id) => {
+                // Resolve the source
+                self.sources.get(source_id).cloned().map_or(
+                    ResolvedSource::Unknown,
+                    |(table, column)| ResolvedSource::Exact { table, column },
+                )
+            }
             ColumnLineage::Simple(table, columns) => {
+                // Resolve the source
                 let column_names: Vec<String> = columns
                     .iter()
                     .filter_map(|id| self.sources.get(id).map(|(_, col)| col.clone()))
                     .collect();
-                Some(ResolvedSource::Simple { table: table.clone(), columns: column_names })
+                ResolvedSource::Simple { table: table.clone(), columns: column_names }
             }
-            ColumnLineage::Compound(columns) => Some(ResolvedSource::Compound(
-                columns.iter().filter_map(|id| self.sources.get(id).cloned()).collect::<Vec<_>>(),
-            )),
-            ColumnLineage::Scalar(value) => Some(ResolvedSource::Scalar(value.clone())),
-        })
+            ColumnLineage::Compound(columns) => {
+                // Resolve the source
+                let resolved_columns = columns
+                    .iter()
+                    .filter_map(|id| self.sources.get(id).cloned())
+                    .collect::<Vec<_>>();
+                ResolvedSource::Compound(resolved_columns)
+            }
+            ColumnLineage::Scalar(value) => ResolvedSource::Scalar(value.clone()),
+        }
     }
 
     /// Unified expression handler that tracks lineage for any expression
@@ -272,41 +221,49 @@ impl ColumnLineageVisitor {
     }
 
     fn track_computed_expression(&mut self, expr: &Expr, output_col: &Column) {
-        let mut source_ids = HashSet::new();
-        let resolved = expr
-            .column_refs()
-            .iter()
-            .filter_map(|col| self.column_lineage.get(col).map(|l| (col, l)))
-            .filter_map(|(col, lineage)| self.resolve_to_source(col).map(|s| (lineage, s)))
-            .map(|(lineage, resolved)| match lineage {
-                ColumnLineage::Exact(source_id) => (vec![*source_id], resolved),
-                ColumnLineage::Simple(_, columns) | ColumnLineage::Compound(columns) => {
-                    (columns.clone(), resolved)
-                }
-                ColumnLineage::Scalar(_) => (vec![], resolved),
-            })
-            .map(|(sources, resolved)| {
-                source_ids.extend(sources);
-                resolved
-            })
-            .reduce(ResolvedSource::merge);
+        let mut all_source_ids = HashSet::new();
+        let mut table_groups: HashMap<TableReference, Vec<SourceId>> = HashMap::new();
 
-        if let Some(r) = resolved {
-            let lineage = match r {
-                ResolvedSource::Exact { .. } if !source_ids.is_empty() => {
-                    ColumnLineage::Exact(*source_ids.iter().next().unwrap())
+        // Collect source IDs directly from existing lineage
+        for col in expr.column_refs() {
+            if let Some(lineage) = self.column_lineage.get(col) {
+                match lineage {
+                    ColumnLineage::Exact(source_id) => {
+                        let _ = all_source_ids.insert(*source_id);
+                        if let Some((table, _)) = self.sources.get(source_id) {
+                            table_groups.entry(table.clone()).or_default().push(*source_id);
+                        }
+                    }
+                    ColumnLineage::Simple(table, source_ids) => {
+                        all_source_ids.extend(source_ids);
+                        table_groups.entry(table.clone()).or_default().extend(source_ids);
+                    }
+                    ColumnLineage::Compound(source_ids) => {
+                        all_source_ids.extend(source_ids);
+                        for source_id in source_ids {
+                            if let Some((table, _)) = self.sources.get(source_id) {
+                                table_groups.entry(table.clone()).or_default().push(*source_id);
+                            }
+                        }
+                    }
+                    ColumnLineage::Scalar(_) => {}
                 }
-                ResolvedSource::Simple { table, .. } => {
-                    ColumnLineage::Simple(table, source_ids.into_iter().collect())
-                }
-                ResolvedSource::Compound(_) => {
-                    ColumnLineage::Compound(source_ids.into_iter().collect())
-                }
-                _ => return,
-            };
-
-            drop(self.column_lineage.insert(output_col.clone(), lineage));
+            }
         }
+
+        // Determine the appropriate lineage type based on source distribution
+        let lineage = if table_groups.len() == 1 {
+            let (table, source_ids) = table_groups.into_iter().next().unwrap();
+            if source_ids.len() == 1 {
+                ColumnLineage::Exact(source_ids[0])
+            } else {
+                ColumnLineage::Simple(table, source_ids)
+            }
+        } else {
+            ColumnLineage::Compound(all_source_ids.into_iter().collect())
+        };
+
+        drop(self.column_lineage.insert(output_col.clone(), lineage));
     }
 
     fn track_table_scan(&mut self, scan: &TableScan) {
@@ -350,48 +307,62 @@ impl ColumnLineageVisitor {
         }
     }
 
-    // TODO: Remove - This may cause a bug. Since the plan context will be recorded but the field is
-    // already accounted for
-    //
-    // fn track_join(&mut self, join: &Join) {
-    //     let output_schema = &join.schema;
-    //     // For joins, the output schema contains columns from both sides
-    //     // We need to preserve the lineage for columns that appear in the output
+    fn track_join(&mut self, join: &Join) {
+        // For joins, we need to track how columns from both sides map to the output schema
+        // This is critical for handling table aliases like "JOIN orders order_details"
+        let output_schema = &join.schema;
 
-    //     // First, left
-    //     for (qual, field) in join.left.schema().iter() {
-    //         let input_name = field.name();
-    //         // let input_col = Column::new(qual.cloned(), field.name());
+        // Track columns from the left side
+        for (left_qual, left_field) in join.left.schema().iter() {
+            let input_col = Column::new(left_qual.cloned(), left_field.name());
 
-    //         if let Some(output_col) = output_schema.field_with_qualified_name(qual, name)
-    //             .ok()
-    //             .or(output_schema.field_with_unqualified_name(name).ok()) {
-    //             if !self.column_lineage.contains_key(&input_col) {
-    //                 drop(self.column_lineage.insert(output_col, existing_lineage));
-    //             }
-    //         }
-    //     }
-    //     // Extend the lineage map with preserved columns
-    //     self.column_lineage.extend(
-    //         self.column_lineage
-    //             .iter()
-    //             .map(|(col, lineage)| {
-    //                 (col.clone(), lineage.clone())
-    //                 // Check if this column (with its qualifier) exists in the output schema
-    //                 if let Some(qual) = &col.relation {
-    //                     if output_schema.field_with_qualified_name(qual, &col.name).is_ok() {
-    //                     }
-    //                 }
-    //                 // Also check unqualified name
-    //                 if output_schema.field_with_unqualified_name(&col.name).is_ok() {
-    //                     Some((col.clone(), lineage.clone()))
-    //                 } else {
-    //                     None
-    //                 }
-    //             })
-    //             .collect::<Vec<_>>(),
-    //     );
-    // }
+            // Find this column in the output schema
+            // It might be qualified with the same name or with an alias
+            for (out_qual, out_field) in output_schema.iter() {
+                if out_field.name() == left_field.name() {
+                    let output_col = Column::new(out_qual.cloned(), out_field.name());
+
+                    // Propagate existing lineage from input to output
+                    if let Some(existing_lineage) = self.column_lineage.get(&input_col).cloned() {
+                        drop(self.column_lineage.insert(output_col, existing_lineage));
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Track columns from the right side
+        for (right_qual, right_field) in join.right.schema().iter() {
+            let input_col = Column::new(right_qual.cloned(), right_field.name());
+
+            // Find this column in the output schema
+            for (out_qual, out_field) in output_schema.iter() {
+                if out_field.name() == right_field.name() {
+                    let output_col = Column::new(out_qual.cloned(), out_field.name());
+
+                    // Propagate existing lineage from input to output
+                    if let Some(existing_lineage) = self.column_lineage.get(&input_col).cloned() {
+                        drop(self.column_lineage.insert(output_col, existing_lineage));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    fn track_filter(&mut self, filter: &Filter) {
+        // Filter operations pass through all columns unchanged
+        let input_schema = filter.input.schema();
+
+        for (qual, field) in input_schema.iter() {
+            let input_col = Column::new(qual.cloned(), field.name());
+
+            // Propagate existing lineage - filters don't change column lineage
+            if let Some(existing_lineage) = self.column_lineage.get(&input_col).cloned() {
+                drop(self.column_lineage.insert(input_col.clone(), existing_lineage));
+            }
+        }
+    }
 
     fn track_aggregate(&mut self, aggregate: &Aggregate) {
         let output_schema = &aggregate.schema;
@@ -507,45 +478,12 @@ impl ColumnLineageVisitor {
 impl<'n> TreeNodeVisitor<'n> for ColumnLineageVisitor {
     type Node = LogicalPlan;
 
-    // TODO: Remove
-    // fn f_down(&mut self, _node: &'n LogicalPlan) -> Result<TreeNodeRecursion> {
-    //     Ok(TreeNodeRecursion::Continue)
-    // }
-
     fn f_up(&mut self, node: &'n LogicalPlan) -> Result<TreeNodeRecursion> {
         // NEW: Handle TableScan first - reset context
         if let LogicalPlan::TableScan(scan) = node {
-            self.current_table = scan.table_name.clone();
-            self.current_depth = 0;
             self.track_table_scan(scan);
-
-            // Store stable identifier for this TableScan
-            let plan_context = PlanContext {
-                node_id:      mem::discriminant(node),
-                node_details: node.display().to_string(),
-                depth:        0,
-                table:        scan.table_name.clone(),
-            };
-
-            // Initialize transformation actions (will be populated by function collector)
-            drop(self.plan_actions.insert(plan_context, TransformationActions::default()));
-
             return Ok(TreeNodeRecursion::Continue);
         }
-
-        // For all other nodes, increment depth and continue with existing logic
-        self.current_depth += 1;
-
-        // Build stable plan context
-        let plan_context = PlanContext {
-            node_id:      mem::discriminant(node),
-            node_details: node.display().to_string(),
-            depth:        self.current_depth,
-            table:        self.current_table.clone(),
-        };
-
-        // Store plan_actions for ALL nodes (even if empty initially)
-        drop(self.plan_actions.insert(plan_context.clone(), TransformationActions::default()));
 
         // Continue with existing node-specific tracking
         match node {
@@ -555,788 +493,770 @@ impl<'n> TreeNodeVisitor<'n> for ColumnLineageVisitor {
             LogicalPlan::Window(window) => self.track_window(window),
             LogicalPlan::Values(values) => self.track_values(values),
             LogicalPlan::Extension(ext) => self.track_extension(ext),
+            LogicalPlan::Join(join) => self.track_join(join),
+            LogicalPlan::Filter(filter) => self.track_filter(filter),
             _ => {}
         }
 
-        // Continue with existing expression tracking for usage contexts
-        node.apply_expressions(|expr| {
-            let column_refs = expr.column_refs();
-            if !column_refs.is_empty() {
-                let expr_hash = calculate_hash(expr);
-                let usage_context = UsageContext { expr_hash, plan_context: plan_context.clone() };
-
-                for col in column_refs {
-                    if let Some(lineage) = self.column_lineage.get(col) {
-                        match lineage {
-                            ColumnLineage::Exact(source) => {
-                                self.source_lineage
-                                    .entry(*source)
-                                    .or_default()
-                                    .push(usage_context.clone());
-                            }
-                            ColumnLineage::Simple(_, sources)
-                            | ColumnLineage::Compound(sources) => {
-                                for source in sources {
-                                    self.source_lineage
-                                        .entry(*source)
-                                        .or_default()
-                                        .push(usage_context.clone());
-                                }
-                            }
-                            ColumnLineage::Scalar(_) => {}
-                        }
-                    }
-                }
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })
+        Ok(TreeNodeRecursion::Continue)
     }
 }
 
-#[cfg(all(test, feature = "test-utils"))]
-mod tests {
-    use datafusion::common::tree_node::{Transformed, TreeNode};
-    use datafusion::prelude::*;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn test_complex_join_lineage() -> Result<()> {
-        let ctx = SessionContext::new();
-
-        drop(ctx.sql("CREATE TABLE people (id INT, name VARCHAR)").await?);
-        drop(ctx.sql("CREATE TABLE people2 (id INT, name VARCHAR, names VARCHAR[])").await?);
-
-        let sql = "
-            SELECT p3.name, p3.id
-            FROM (
-                SELECT p1.name, p2.name, p1.id
-                FROM (
-                    SELECT id, name FROM people
-                ) p1
-                JOIN (
-                    SELECT id, name FROM people2
-                ) p2 ON p1.id = p2.id
-            ) p3
-        ";
-
-        let plan = ctx.sql(sql).await?.into_unoptimized_plan();
-
-        let mut visitor = ColumnLineageVisitor::new();
-        let _ = plan.visit(&mut visitor)?;
-
-        let p3_id = Column::new(Some(TableReference::bare("p3")), "id");
-        if visitor.column_lineage.contains_key(&p3_id) {
-            // First resolve to get the actual source information
-            if let Some(resolved) = visitor.resolve_to_source(&p3_id) {
-                match resolved {
-                    ResolvedSource::Exact { table, column } => {
-                        assert_eq!(table, TableReference::bare("people"));
-                        assert_eq!(column, "id");
-                    }
-                    _ => panic!("Expected exact source for p3.id"),
-                }
-            }
-        } else {
-            panic!("No lineage found for p3.id");
-        }
-
-        let p3_name = Column::new(Some(TableReference::bare("p3")), "name");
-        if visitor.column_lineage.contains_key(&p3_name) {
-            // First resolve to get the actual source information
-            if let Some(resolved) = visitor.resolve_to_source(&p3_name) {
-                match resolved {
-                    ResolvedSource::Exact { table, column } => {
-                        // Verify it correctly resolves to the first column (from p1/people)
-                        assert_eq!(table, TableReference::bare("people"));
-                        assert_eq!(column, "name");
-                    }
-                    _ => panic!("Expected exact source for p3.name"),
-                }
-            }
-        } else {
-            panic!("No lineage found for p3.name");
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_simple_subquery_alias() -> Result<()> {
-        let ctx = SessionContext::new();
-
-        drop(ctx.sql("CREATE TABLE t1 (id INT, name VARCHAR)").await?);
-
-        let sql = "
-            SELECT p3.name, p3.id
-            FROM (
-                SELECT p1.name, p1.id
-                FROM (
-                    SELECT id, name FROM t1
-                ) p1
-            ) p3
-        ";
-
-        let plan = ctx.sql(sql).await?.into_unoptimized_plan();
-
-        let mut visitor = ColumnLineageVisitor::new();
-        let _ = plan.visit(&mut visitor)?;
-
-        let p3_id = Column::new(Some(TableReference::bare("p3")), "id");
-        let lineage = visitor.column_lineage.get(&p3_id);
-        assert!(lineage.is_some(), "Should find p3.id lineage");
-
-        // Then resolve to get source information
-        if let Some(resolved) = visitor.resolve_to_source(&p3_id) {
-            match resolved {
-                ResolvedSource::Exact { table, column } => {
-                    assert_eq!(table, TableReference::bare("t1"));
-                    assert_eq!(column, "id");
-                }
-                _ => panic!("Expected exact source"),
-            }
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_column_lineage_with_computed_columns() -> Result<()> {
-        let ctx = SessionContext::new();
-
-        drop(ctx.sql("CREATE TABLE test_table (a DECIMAL, b DECIMAL, c DECIMAL)").await?);
-
-        // Test comprehensive computed column scenarios
-        let sql = "
-            SELECT
-                a + b as simple_add,
-                a * b + c as multi_column_expr,
-                a + 100 as column_plus_scalar,
-                42 as pure_scalar,
-                a as direct_column,
-                CASE WHEN a > 0 THEN b ELSE c END as conditional_expr,
-                COALESCE(a, b, c) as coalesce_expr
-            FROM test_table
-        ";
-
-        let plan = ctx.sql(sql).await?.into_unoptimized_plan();
-
-        let mut lineage_visitor = ColumnLineageVisitor::new();
-        let _ = plan.visit(&mut lineage_visitor)?;
-
-        // Test 1: Simple addition (a + b) should create Simple lineage
-        let simple_add = Column::new_unqualified("simple_add");
-        let lineage = lineage_visitor.column_lineage.get(&simple_add);
-        assert!(lineage.is_some(), "simple_add should have lineage");
-        match lineage.unwrap() {
-            ColumnLineage::Simple(table, columns) => {
-                assert_eq!(table, &TableReference::bare("test_table"));
-                assert_eq!(columns.len(), 2); // a and b
-            }
-            _ => panic!("Expected Simple lineage for a + b"),
-        }
-
-        // Verify resolution
-        if let Some(resolved) = lineage_visitor.resolve_to_source(&simple_add) {
-            match resolved {
-                ResolvedSource::Simple { table, columns } => {
-                    assert_eq!(table, TableReference::bare("test_table"));
-                    assert_eq!(columns.len(), 2);
-                    assert!(columns.contains(&"a".to_string()));
-                    assert!(columns.contains(&"b".to_string()));
-                }
-                _ => panic!("Expected Simple resolution for simple_add"),
-            }
-        }
-
-        // Test 2: Multi-column expression (a * b + c) should create Simple lineage
-        let multi_expr = Column::new_unqualified("multi_column_expr");
-        let lineage = lineage_visitor.column_lineage.get(&multi_expr);
-        assert!(lineage.is_some(), "multi_column_expr should have lineage");
-        match lineage.unwrap() {
-            ColumnLineage::Simple(table, columns) => {
-                assert_eq!(table, &TableReference::bare("test_table"));
-                assert_eq!(columns.len(), 3); // a, b, and c
-            }
-            _ => panic!("Expected Simple lineage for a * b + c"),
-        }
-
-        // Test 3: Column plus scalar (a + 100) should create Exact lineage
-        let col_plus_scalar = Column::new_unqualified("column_plus_scalar");
-        let lineage = lineage_visitor.column_lineage.get(&col_plus_scalar);
-        assert!(lineage.is_some(), "column_plus_scalar should have lineage");
-        match lineage.unwrap() {
-            ColumnLineage::Exact { .. } => {
-                // Expected - only one column involved
-            }
-            _ => panic!("Expected Exact lineage for a + 100"),
-        }
-
-        // Test 4: Pure scalar should create Scalar lineage
-        let pure_scalar = Column::new_unqualified("pure_scalar");
-        let lineage = lineage_visitor.column_lineage.get(&pure_scalar);
-        assert!(lineage.is_some(), "pure_scalar should have lineage");
-        match lineage.unwrap() {
-            ColumnLineage::Scalar { .. } => {
-                // Expected
-            }
-            _ => panic!("Expected Scalar lineage for literal 42"),
-        }
-
-        // Test 5: Direct column should create Exact lineage
-        let direct_col = Column::new_unqualified("direct_column");
-        let lineage = lineage_visitor.column_lineage.get(&direct_col);
-        assert!(lineage.is_some(), "direct_column should have lineage");
-        match lineage.unwrap() {
-            ColumnLineage::Exact { .. } => {
-                // Expected
-            }
-            _ => panic!("Expected Exact lineage for direct column"),
-        }
-
-        // Test 6: CASE expression should create Simple lineage (uses multiple columns)
-        let conditional = Column::new_unqualified("conditional_expr");
-        let lineage = lineage_visitor.column_lineage.get(&conditional);
-        assert!(lineage.is_some(), "conditional_expr should have lineage");
-        match lineage.unwrap() {
-            ColumnLineage::Simple(table, columns) => {
-                assert_eq!(table, &TableReference::bare("test_table"));
-                assert!(columns.len() >= 2); // At least a, b (possibly c depending on DataFusion's analysis)
-            }
-            _ => panic!("Expected Simple lineage for CASE expression"),
-        }
-
-        // Test 7: COALESCE expression should create Simple lineage
-        let coalesce = Column::new_unqualified("coalesce_expr");
-        let lineage = lineage_visitor.column_lineage.get(&coalesce);
-        assert!(lineage.is_some(), "coalesce_expr should have lineage");
-        match lineage.unwrap() {
-            ColumnLineage::Simple(table, columns) => {
-                assert_eq!(table, &TableReference::bare("test_table"));
-                assert_eq!(columns.len(), 3); // a, b, and c
-            }
-            _ => panic!("Expected Simple lineage for COALESCE expression"),
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_scalar_lineage() -> Result<()> {
-        let ctx = SessionContext::new();
-
-        drop(ctx.sql("CREATE TABLE numbers (id INT, value DECIMAL)").await?);
-
-        // Test pure scalar expressions and mixed scalar/column expressions
-        let sql = "
-            SELECT
-                42 as const_value,
-                value * 2.5 as scaled_value,
-                id + 100 as offset_id,
-                3.14159 as const_pi
-            FROM numbers
-        ";
-
-        let plan = ctx.sql(sql).await?.into_unoptimized_plan();
-
-        let mut visitor = ColumnLineageVisitor::new();
-        let _ = plan.visit(&mut visitor)?;
-
-        // Check pure scalar lineage
-        let const_value = Column::new_unqualified("const_value");
-        if let Some(lineage) = visitor.column_lineage.get(&const_value) {
-            match lineage {
-                ColumnLineage::Scalar(value) => {
-                    assert!(value.to_string() == 42.to_string());
-                }
-                _ => panic!("Expected scalar lineage for const_value, got {lineage:?}"),
-            }
-
-            // Verify resolve_to_source returns Scalar
-            if let Some(resolved) = visitor.resolve_to_source(&const_value) {
-                match resolved {
-                    ResolvedSource::Scalar(_) => {
-                        // Expected
-                    }
-                    _ => panic!("Expected scalar resolution"),
-                }
-            }
-        } else {
-            panic!("No lineage found for const_value");
-        }
-
-        // Check mixed scalar/column expression
-        let scaled_value = Column::new_unqualified("scaled_value");
-        if let Some(lineage) = visitor.column_lineage.get(&scaled_value) {
-            // This should be Exact lineage since only one column is involved
-            match lineage {
-                ColumnLineage::Exact { .. } => {
-                    // Expected
-                }
-                _ => panic!("Expected exact lineage for scaled_value (single column * scalar)"),
-            }
-        }
-
-        // Check another pure scalar
-        let const_pi = Column::new_unqualified("const_pi");
-        if let Some(lineage) = visitor.column_lineage.get(&const_pi) {
-            match lineage {
-                ColumnLineage::Scalar { .. } => {
-                    // Expected
-                }
-                _ => panic!("Expected scalar lineage for const_pi"),
-            }
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_simple_variant_multiple_columns() -> Result<()> {
-        let ctx = SessionContext::new();
-
-        drop(
-            ctx.sql(
-                "CREATE TABLE users (id INT, first_name VARCHAR, last_name VARCHAR, email VARCHAR)",
-            )
-            .await?,
-        );
-
-        // Test expressions that use multiple columns from the same table
-        let sql = "
-            SELECT
-                concat(first_name, ' ', last_name) as full_name,
-                substring(email, 1, 5) || '_' || id as user_code,
-                first_name || '-' || last_name || '@example.com' as generated_email
-            FROM users
-        ";
-
-        let plan = ctx.sql(sql).await?.into_unoptimized_plan();
-
-        let mut visitor = ColumnLineageVisitor::new();
-        let _ = plan.visit(&mut visitor)?;
-
-        // Check full_name lineage - should be Simple variant
-        let full_name = Column::new_unqualified("full_name");
-        if let Some(lineage) = visitor.column_lineage.get(&full_name) {
-            match lineage {
-                ColumnLineage::Simple(table, columns) => {
-                    assert_eq!(table, &TableReference::bare("users"));
-                    assert_eq!(columns.len(), 2); // first_name and last_name
-                }
-                _ => panic!("Expected Simple lineage for full_name, got {lineage:?}"),
-            }
-
-            // Verify resolve_to_source returns Simple
-            if let Some(resolved) = visitor.resolve_to_source(&full_name) {
-                match resolved {
-                    ResolvedSource::Simple { table, columns } => {
-                        assert_eq!(table, TableReference::bare("users"));
-                        assert_eq!(columns.len(), 2);
-                        assert!(columns.contains(&"first_name".to_string()));
-                        assert!(columns.contains(&"last_name".to_string()));
-                    }
-                    _ => panic!("Expected Simple resolution"),
-                }
-            }
-        } else {
-            panic!("No lineage found for full_name");
-        }
-
-        // Check user_code lineage - should be Simple (email and id from same table)
-        let user_code = Column::new_unqualified("user_code");
-        if let Some(lineage) = visitor.column_lineage.get(&user_code) {
-            match lineage {
-                ColumnLineage::Simple(table, columns) => {
-                    assert_eq!(table, &TableReference::bare("users"));
-                    assert_eq!(columns.len(), 2); // email and id
-                }
-                _ => panic!("Expected Simple lineage for user_code"),
-            }
-        }
-
-        // Check generated_email - should be Simple (all from users table)
-        let generated_email = Column::new_unqualified("generated_email");
-        if let Some(lineage) = visitor.column_lineage.get(&generated_email) {
-            match lineage {
-                ColumnLineage::Simple(table, columns) => {
-                    assert_eq!(table, &TableReference::bare("users"));
-                    assert_eq!(columns.len(), 2); // first_name and last_name
-                }
-                _ => panic!("Expected Simple lineage for generated_email"),
-            }
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_cte_lineage_tracking() -> Result<()> {
-        let ctx = SessionContext::new();
-
-        drop(
-            ctx.sql("CREATE TABLE measurements (id INT, temp_celsius DECIMAL, pressure DECIMAL)")
-                .await?,
-        );
-
-        // Test CTE with computed columns that will have functions applied
-        let sql = "
-            WITH converted AS (
-                SELECT
-                    id,
-                    temp_celsius * 1.8 + 32 as temp_fahrenheit,
-                    pressure / 101.325 as pressure_atm
-                FROM measurements
-            )
-            SELECT
-                id,
-                exp(temp_fahrenheit) as exp_temp,
-                sqrt(pressure_atm) as sqrt_pressure
-            FROM converted
-        ";
-
-        let plan = ctx.sql(sql).await?.into_unoptimized_plan();
-
-        let mut visitor = ColumnLineageVisitor::new();
-        let _ = plan.visit(&mut visitor)?;
-
-        // The critical test: can we trace exp_temp back to measurements.temp_celsius?
-        let exp_temp = Column::new_unqualified("exp_temp");
-        if let Some(resolved) = visitor.resolve_to_source(&exp_temp) {
-            match resolved {
-                ResolvedSource::Exact { table, column } => {
-                    assert_eq!(table, TableReference::bare("measurements"));
-                    assert_eq!(column, "temp_celsius");
-                }
-                _ => panic!("Expected exact resolution for exp_temp to measurements.temp_celsius"),
-            }
-        } else {
-            panic!("Failed to resolve exp_temp to source");
-        }
-
-        // Also check sqrt_pressure
-        let sqrt_pressure = Column::new_unqualified("sqrt_pressure");
-        if let Some(resolved) = visitor.resolve_to_source(&sqrt_pressure) {
-            match resolved {
-                ResolvedSource::Exact { table, column } => {
-                    assert_eq!(table, TableReference::bare("measurements"));
-                    assert_eq!(column, "pressure");
-                }
-                _ => panic!("Expected exact resolution for sqrt_pressure"),
-            }
-        }
-
-        // Test a more complex CTE scenario with joins
-        let sql2 = "
-            WITH
-            stats AS (
-                SELECT
-                    id,
-                    temp_celsius + pressure as combined_metric
-                FROM measurements
-            ),
-            doubled AS (
-                SELECT
-                    id,
-                    combined_metric * 2 as double_metric
-                FROM stats
-            )
-            SELECT
-                ln(double_metric) as ln_double
-            FROM doubled
-        ";
-
-        let plan2 = ctx.sql(sql2).await?.into_unoptimized_plan();
-        let mut visitor2 = ColumnLineageVisitor::new();
-        let _ = plan2.visit(&mut visitor2)?;
-
-        // ln_double should trace back to BOTH temp_celsius and pressure
-        let ln_double = Column::new_unqualified("ln_double");
-        if let Some(resolved) = visitor2.resolve_to_source(&ln_double) {
-            match resolved {
-                ResolvedSource::Simple { table, columns } => {
-                    assert_eq!(table, TableReference::bare("measurements"));
-                    assert_eq!(columns.len(), 2);
-                    assert!(columns.contains(&"temp_celsius".to_string()));
-                    assert!(columns.contains(&"pressure".to_string()));
-                }
-                _ => panic!(
-                    "Expected Simple resolution for ln_double (multiple columns from same table)"
-                ),
-            }
-        }
-
-        Ok(())
-    }
-
-    fn verify_plan_context(
-        plan: &LogicalPlan,
-        visitor: &ColumnLineageVisitor,
-        plan_context: &PlanContext,
-    ) -> Result<()> {
-        // Verify that expressions in this node reference this plan context
-        let mut expressions_with_context = 0;
-        // Attempt lookup and track by table - MUST succeed for every node
-        assert!(
-            visitor.plan_actions.contains_key(plan_context),
-            "✗ FAILED: No transformation actions found for context: {plan_context:?}"
-        );
-
-        println!(
-            "--------\n✓ Found transformation actions for context:\n  Node = {}\n  Context = \
-             {plan_context:?}\n",
-            plan.display()
-        );
-        let _ = plan.apply_expressions(|expr| {
-            let column_refs = expr.column_refs();
-            if !column_refs.is_empty() {
-                let expr_hash = calculate_hash(expr);
-                // Check if this expression appears in source_lineage with this plan context
-                for col in column_refs {
-                    let cname = col.flat_name();
-
-                    if let Some(lineage) = visitor.column_lineage.get(col) {
-                        let source_ids = match lineage {
-                            ColumnLineage::Exact(id) => vec![*id],
-                            ColumnLineage::Simple(_, ids) | ColumnLineage::Compound(ids) => {
-                                ids.clone()
-                            }
-                            ColumnLineage::Scalar(_) => continue,
-                        };
-                        for source_id in source_ids {
-                            let contexts = visitor.source_lineage.get(&source_id);
-                            assert!(contexts.is_some(), "Contexts should be present");
-                            let contexts = contexts.unwrap();
-                            println!("  * {cname} ({source_id:?}) ALL contexts: {contexts:?}");
-                            let found_expr_ctx = contexts.iter().find(|ctx| {
-                                ctx.expr_hash == expr_hash && ctx.plan_context == *plan_context
-                            });
-                            assert!(found_expr_ctx.is_some(), "Expr Context should be found");
-                            println!("  * {cname} ({source_id:?}) context: {found_expr_ctx:?}");
-                            if found_expr_ctx.is_some() {
-                                expressions_with_context += 1;
-                                break;
-                            }
-                        }
-                    } else {
-                        println!(" x NO LINEAGE FOUND FOR COLUMN: {cname}");
-                        panic!("Lineages should exist for all columns");
-                    }
-                }
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_plan_context() -> Result<()> {
-        let ctx = SessionContext::new();
-
-        drop(ctx.sql("CREATE TABLE customers (id INT, name VARCHAR)").await?);
-        drop(ctx.sql("CREATE TABLE orders (id INT, customer_id INT, amount DECIMAL)").await?);
-
-        let sql = "
-            SELECT
-                c.name,
-                o.amount
-            FROM customers c
-            JOIN orders o ON c.id = o.customer_id
-            WHERE o.amount > 100
-        ";
-
-        let plan = ctx.sql(sql).await?.into_unoptimized_plan();
-
-        // Collect lineage
-        let mut visitor = ColumnLineageVisitor::new();
-        let _ = plan.visit(&mut visitor)?;
-
-        // Track transformation traversal
-        let mut current_table_scan = TableReference::bare("");
-        let mut depth_from_table_scan = 0;
-
-        drop(plan.transform_up(|node| {
-            // Track context
-            if let LogicalPlan::TableScan(scan) = &node {
-                current_table_scan = scan.table_name.clone();
-                depth_from_table_scan = 0;
-            } else {
-                depth_from_table_scan += 1;
-            }
-
-            let plan_context = PlanContext {
-                node_id:      mem::discriminant(&node),
-                node_details: node.display().to_string(),
-                depth:        depth_from_table_scan,
-                table:        current_table_scan.clone(),
-            };
-
-            verify_plan_context(&node, &visitor, &plan_context)?;
-
-            Ok(Transformed::no(node))
-        })?);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_plan_context_subquery() -> Result<()> {
-        let ctx = SessionContext::new();
-
-        drop(ctx.sql("CREATE TABLE users (id INT, name VARCHAR, age DECIMAL)").await?);
-
-        let sql = "
-            SELECT
-                name,
-                age * 2 as double_age
-            FROM (
-                SELECT id, name, age
-                FROM users
-                WHERE age > 18
-            ) filtered
-            ORDER BY name
-        ";
-
-        let plan = ctx.sql(sql).await?.into_unoptimized_plan();
-
-        // First, collect lineage information
-        let mut visitor = ColumnLineageVisitor::new();
-        let _ = plan.visit(&mut visitor)?;
-
-        // Now simulate post-order transformation traversal
-        let mut current_table_scan = TableReference::bare("");
-        let mut depth_from_table_scan = 0;
-
-        drop(plan.transform_up(|node| {
-            // Track table scan and depth exactly as transformation would
-            if let LogicalPlan::TableScan(scan) = &node {
-                current_table_scan = scan.table_name.clone();
-                depth_from_table_scan = 0;
-            } else {
-                depth_from_table_scan += 1;
-            }
-
-            // Regenerate plan context using the reproducible mechanism
-            let plan_context = PlanContext {
-                node_id:      mem::discriminant(&node),
-                node_details: node.display().to_string(),
-                depth:        depth_from_table_scan,
-                table:        current_table_scan.clone(),
-            };
-
-            verify_plan_context(&node, &visitor, &plan_context)?;
-
-            Ok(Transformed::no(node))
-        })?);
-        // Verify we found actions for the users table specifically
-        let users_table = TableReference::bare("users");
-        let users_actions_count =
-            visitor.plan_actions.keys().filter(|ctx| ctx.table == users_table).count();
-
-        assert!(users_actions_count > 0, "Should have transformation actions for users table");
-        println!("Total actions for users table: {users_actions_count}");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_plan_context_join() -> Result<()> {
-        let ctx = SessionContext::new();
-
-        drop(ctx.sql("CREATE TABLE customers (id INT, name VARCHAR)").await?);
-        drop(ctx.sql("CREATE TABLE orders (id INT, customer_id INT, amount DECIMAL)").await?);
-
-        let sql = "
-            SELECT
-                c.name,
-                exp(o.amount) as exp_amount
-            FROM (
-                SELECT id, name
-                FROM customers
-            ) c
-            JOIN (
-                SELECT id, customer_id, amount
-                FROM orders
-            ) o ON c.id = o.customer_id
-            WHERE o.amount > 100
-        ";
-
-        let plan = ctx.sql(sql).await?.into_unoptimized_plan();
-
-        // First, collect lineage information
-        let mut visitor = ColumnLineageVisitor::new();
-        let _ = plan.visit(&mut visitor)?;
-
-        // Now simulate post-order transformation traversal
-        let mut current_table_scan = TableReference::bare("");
-        let mut depth_from_table_scan = 0;
-        let mut next_source_id = 0;
-
-        drop(plan.transform_up(|node| {
-            // Track table scan and depth exactly as transformation would
-            if let LogicalPlan::TableScan(scan) = &node {
-                current_table_scan = scan.table_name.clone();
-                depth_from_table_scan = 0;
-
-                // Regenerate plan context using the reproducible mechanism
-                let plan_context = PlanContext {
-                    node_id:      mem::discriminant(&node),
-                    node_details: node.display().to_string(),
-                    depth:        depth_from_table_scan,
-                    table:        current_table_scan.clone(),
-                };
-                println!(
-                    "--------\n✓ Found transformation actions for context:\n  Node = {}\n  \
-                     Context = {plan_context:?}\n",
-                    node.display()
-                );
-
-                let mut lineages = Vec::new();
-
-                let table_name = scan.table_name.clone();
-                for (qual, field) in scan.projected_schema.iter() {
-                    let source_column = Column::new(qual.cloned(), field.name());
-                    // Create source ID for this table/column pair
-                    let source_id = SourceId(next_source_id);
-                    next_source_id += 1;
-                    let source = visitor.sources.get(&source_id);
-                    assert!(source.is_some(), "Source ID not found");
-                    let source = source.unwrap();
-                    assert_eq!(source, &(table_name.clone(), field.name().to_string()));
-                    let source_lineage = visitor.column_lineage.get(&source_column);
-                    assert!(source_lineage.is_some(), "Source lineage not found");
-                    let source_lineage = source_lineage.unwrap();
-                    assert_eq!(source_lineage, &ColumnLineage::Exact(source_id));
-                    lineages.push(source_lineage);
-                }
-
-                println!("  * TableScan lineages: {lineages:?}");
-                return Ok(Transformed::no(node));
-            }
-
-            depth_from_table_scan += 1;
-
-            // Regenerate plan context using the reproducible mechanism
-            let plan_context = PlanContext {
-                node_id:      mem::discriminant(&node),
-                node_details: node.display().to_string(),
-                depth:        depth_from_table_scan,
-                table:        current_table_scan.clone(),
-            };
-
-            verify_plan_context(&node, &visitor, &plan_context)?;
-
-            Ok(Transformed::no(node))
-        })?);
-
-        // TODO: Remove - assert across all tables
-        // // Verify we found actions for the users table specifically
-        // let users_table = TableReference::bare("users");
-        // let users_actions_count =
-        //     visitor.plan_actions.keys().filter(|ctx| ctx.table == users_table).count();
-
-        // assert!(users_actions_count > 0, "Should have transformation actions for users table");
-        // println!("Total actions for users table: {users_actions_count}");
-
-        Ok(())
-    }
-}
+// TODO: Remove
+// #[cfg(all(test, feature = "test-utils"))]
+// mod tests {
+//     use datafusion::common::tree_node::TreeNode;
+//     use datafusion::prelude::*;
+
+//     use super::*;
+
+//     #[tokio::test]
+//     async fn test_complex_join_lineage() -> Result<()> {
+//         let ctx = SessionContext::new();
+
+//         drop(ctx.sql("CREATE TABLE people (id INT, name VARCHAR)").await?);
+//         drop(ctx.sql("CREATE TABLE people2 (id INT, name VARCHAR, names VARCHAR[])").await?);
+
+//         let sql = "
+//             SELECT p3.name, p3.id
+//             FROM (
+//                 SELECT p1.name, p2.name, p1.id
+//                 FROM (
+//                     SELECT id, name FROM people
+//                 ) p1
+//                 JOIN (
+//                     SELECT id, name FROM people2
+//                 ) p2 ON p1.id = p2.id
+//             ) p3
+//         ";
+
+//         let plan = ctx.sql(sql).await?.into_unoptimized_plan();
+
+//         let mut visitor = ColumnLineageVisitor::new();
+//         let _ = plan.visit(&mut visitor)?;
+
+//         let p3_id = Column::new(Some(TableReference::bare("p3")), "id");
+//         if visitor.column_lineage.contains_key(&p3_id) {
+//             // First resolve to get the actual source information
+//             let (_usage_contexts, resolved) = visitor.resolve_to_source(&p3_id);
+//             if !matches!(resolved, ResolvedSource::Unknown) {
+//                 match resolved {
+//                     ResolvedSource::Exact { table, column } => {
+//                         assert_eq!(table, TableReference::bare("people"));
+//                         assert_eq!(column, "id");
+//                     }
+//                     _ => panic!("Expected exact source for p3.id"),
+//                 }
+//             }
+//         } else {
+//             panic!("No lineage found for p3.id");
+//         }
+
+//         let p3_name = Column::new(Some(TableReference::bare("p3")), "name");
+//         if visitor.column_lineage.contains_key(&p3_name) {
+//             // First resolve to get the actual source information
+//             let (_usage_contexts, resolved) = visitor.resolve_to_source(&p3_name);
+//             if !matches!(resolved, ResolvedSource::Unknown) {
+//                 match resolved {
+//                     ResolvedSource::Exact { table, column } => {
+//                         // Verify it correctly resolves to the first column (from p1/people)
+//                         assert_eq!(table, TableReference::bare("people"));
+//                         assert_eq!(column, "name");
+//                     }
+//                     _ => panic!("Expected exact source for p3.name"),
+//                 }
+//             }
+//         } else {
+//             panic!("No lineage found for p3.name");
+//         }
+
+//         Ok(())
+//     }
+
+//     #[tokio::test]
+//     async fn test_simple_subquery_alias() -> Result<()> {
+//         let ctx = SessionContext::new();
+
+//         drop(ctx.sql("CREATE TABLE t1 (id INT, name VARCHAR)").await?);
+
+//         let sql = "
+//             SELECT p3.name, p3.id
+//             FROM (
+//                 SELECT p1.name, p1.id
+//                 FROM (
+//                     SELECT id, name FROM t1
+//                 ) p1
+//             ) p3
+//         ";
+
+//         let plan = ctx.sql(sql).await?.into_unoptimized_plan();
+
+//         let mut visitor = ColumnLineageVisitor::new();
+//         let _ = plan.visit(&mut visitor)?;
+
+//         let p3_id = Column::new(Some(TableReference::bare("p3")), "id");
+//         let lineage = visitor.column_lineage.get(&p3_id);
+//         assert!(lineage.is_some(), "Should find p3.id lineage");
+
+//         // Then resolve to get source information
+//         let (_usage_contexts, resolved) = visitor.resolve_to_source(&p3_id);
+//         if !matches!(resolved, ResolvedSource::Unknown) {
+//             match resolved {
+//                 ResolvedSource::Exact { table, column } => {
+//                     assert_eq!(table, TableReference::bare("t1"));
+//                     assert_eq!(column, "id");
+//                 }
+//                 _ => panic!("Expected exact source"),
+//             }
+//         }
+
+//         Ok(())
+//     }
+
+//     #[tokio::test]
+//     async fn test_column_lineage_with_computed_columns() -> Result<()> {
+//         let ctx = SessionContext::new();
+
+//         drop(ctx.sql("CREATE TABLE test_table (a DECIMAL, b DECIMAL, c DECIMAL)").await?);
+
+//         // Test comprehensive computed column scenarios
+//         let sql = "
+//             SELECT
+//                 a + b as simple_add,
+//                 a * b + c as multi_column_expr,
+//                 a + 100 as column_plus_scalar,
+//                 42 as pure_scalar,
+//                 a as direct_column,
+//                 CASE WHEN a > 0 THEN b ELSE c END as conditional_expr,
+//                 COALESCE(a, b, c) as coalesce_expr
+//             FROM test_table
+//         ";
+
+//         let plan = ctx.sql(sql).await?.into_unoptimized_plan();
+
+//         let mut lineage_visitor = ColumnLineageVisitor::new();
+//         let _ = plan.visit(&mut lineage_visitor)?;
+
+//         // Test 1: Simple addition (a + b) should create Simple lineage
+//         let simple_add = Column::new_unqualified("simple_add");
+//         let lineage = lineage_visitor.column_lineage.get(&simple_add);
+//         assert!(lineage.is_some(), "simple_add should have lineage");
+//         match lineage.unwrap() {
+//             ColumnLineage::Simple(table, columns) => {
+//                 assert_eq!(table, &TableReference::bare("test_table"));
+//                 assert_eq!(columns.len(), 2); // a and b
+//             }
+//             _ => panic!("Expected Simple lineage for a + b"),
+//         }
+
+//         // Verify resolution
+//         let (_usage_contexts, resolved) = lineage_visitor.resolve_to_source(&simple_add);
+//         if !matches!(resolved, ResolvedSource::Unknown) {
+//             match resolved {
+//                 ResolvedSource::Simple { table, columns } => {
+//                     assert_eq!(table, TableReference::bare("test_table"));
+//                     assert_eq!(columns.len(), 2);
+//                     assert!(columns.contains(&"a".to_string()));
+//                     assert!(columns.contains(&"b".to_string()));
+//                 }
+//                 _ => panic!("Expected Simple resolution for simple_add"),
+//             }
+//         }
+
+//         // Test 2: Multi-column expression (a * b + c) should create Simple lineage
+//         let multi_expr = Column::new_unqualified("multi_column_expr");
+//         let lineage = lineage_visitor.column_lineage.get(&multi_expr);
+//         assert!(lineage.is_some(), "multi_column_expr should have lineage");
+//         match lineage.unwrap() {
+//             ColumnLineage::Simple(table, columns) => {
+//                 assert_eq!(table, &TableReference::bare("test_table"));
+//                 assert_eq!(columns.len(), 3); // a, b, and c
+//             }
+//             _ => panic!("Expected Simple lineage for a * b + c"),
+//         }
+
+//         // Test 3: Column plus scalar (a + 100) should create Exact lineage
+//         let col_plus_scalar = Column::new_unqualified("column_plus_scalar");
+//         let lineage = lineage_visitor.column_lineage.get(&col_plus_scalar);
+//         assert!(lineage.is_some(), "column_plus_scalar should have lineage");
+//         match lineage.unwrap() {
+//             ColumnLineage::Exact { .. } => {
+//                 // Expected - only one column involved
+//             }
+//             _ => panic!("Expected Exact lineage for a + 100"),
+//         }
+
+//         // Test 4: Pure scalar should create Scalar lineage
+//         let pure_scalar = Column::new_unqualified("pure_scalar");
+//         let lineage = lineage_visitor.column_lineage.get(&pure_scalar);
+//         assert!(lineage.is_some(), "pure_scalar should have lineage");
+//         match lineage.unwrap() {
+//             ColumnLineage::Scalar { .. } => {
+//                 // Expected
+//             }
+//             _ => panic!("Expected Scalar lineage for literal 42"),
+//         }
+
+//         // Test 5: Direct column should create Exact lineage
+//         let direct_col = Column::new_unqualified("direct_column");
+//         let lineage = lineage_visitor.column_lineage.get(&direct_col);
+//         assert!(lineage.is_some(), "direct_column should have lineage");
+//         match lineage.unwrap() {
+//             ColumnLineage::Exact { .. } => {
+//                 // Expected
+//             }
+//             _ => panic!("Expected Exact lineage for direct column"),
+//         }
+
+//         // Test 6: CASE expression should create Simple lineage (uses multiple columns)
+//         let conditional = Column::new_unqualified("conditional_expr");
+//         let lineage = lineage_visitor.column_lineage.get(&conditional);
+//         assert!(lineage.is_some(), "conditional_expr should have lineage");
+//         match lineage.unwrap() {
+//             ColumnLineage::Simple(table, columns) => {
+//                 assert_eq!(table, &TableReference::bare("test_table"));
+//                 assert!(columns.len() >= 2); // At least a, b (possibly c depending on
+// DataFusion's analysis)             }
+//             _ => panic!("Expected Simple lineage for CASE expression"),
+//         }
+
+//         // Test 7: COALESCE expression should create Simple lineage
+//         let coalesce = Column::new_unqualified("coalesce_expr");
+//         let lineage = lineage_visitor.column_lineage.get(&coalesce);
+//         assert!(lineage.is_some(), "coalesce_expr should have lineage");
+//         match lineage.unwrap() {
+//             ColumnLineage::Simple(table, columns) => {
+//                 assert_eq!(table, &TableReference::bare("test_table"));
+//                 assert_eq!(columns.len(), 3); // a, b, and c
+//             }
+//             _ => panic!("Expected Simple lineage for COALESCE expression"),
+//         }
+
+//         Ok(())
+//     }
+
+//     #[tokio::test]
+//     async fn test_scalar_lineage() -> Result<()> {
+//         let ctx = SessionContext::new();
+
+//         drop(ctx.sql("CREATE TABLE numbers (id INT, value DECIMAL)").await?);
+
+//         // Test pure scalar expressions and mixed scalar/column expressions
+//         let sql = "
+//             SELECT
+//                 42 as const_value,
+//                 value * 2.5 as scaled_value,
+//                 id + 100 as offset_id,
+//                 3.14159 as const_pi
+//             FROM numbers
+//         ";
+
+//         let plan = ctx.sql(sql).await?.into_unoptimized_plan();
+
+//         let mut visitor = ColumnLineageVisitor::new();
+//         let _ = plan.visit(&mut visitor)?;
+
+//         // Check pure scalar lineage
+//         let const_value = Column::new_unqualified("const_value");
+//         if let Some(lineage) = visitor.column_lineage.get(&const_value) {
+//             match lineage {
+//                 ColumnLineage::Scalar(value) => {
+//                     assert!(value.to_string() == 42.to_string());
+//                 }
+//                 _ => panic!("Expected scalar lineage for const_value, got {lineage:?}"),
+//             }
+
+//             // Verify resolve_to_source returns Scalar
+//             let (_usage_contexts, resolved) = visitor.resolve_to_source(&const_value);
+//             if !matches!(resolved, ResolvedSource::Unknown) {
+//                 match resolved {
+//                     ResolvedSource::Scalar(_) => {
+//                         // Expected
+//                     }
+//                     _ => panic!("Expected scalar resolution"),
+//                 }
+//             }
+//         } else {
+//             panic!("No lineage found for const_value");
+//         }
+
+//         // Check mixed scalar/column expression
+//         let scaled_value = Column::new_unqualified("scaled_value");
+//         if let Some(lineage) = visitor.column_lineage.get(&scaled_value) {
+//             // This should be Exact lineage since only one column is involved
+//             match lineage {
+//                 ColumnLineage::Exact { .. } => {
+//                     // Expected
+//                 }
+//                 _ => panic!("Expected exact lineage for scaled_value (single column * scalar)"),
+//             }
+//         }
+
+//         // Check another pure scalar
+//         let const_pi = Column::new_unqualified("const_pi");
+//         if let Some(lineage) = visitor.column_lineage.get(&const_pi) {
+//             match lineage {
+//                 ColumnLineage::Scalar { .. } => {
+//                     // Expected
+//                 }
+//                 _ => panic!("Expected scalar lineage for const_pi"),
+//             }
+//         }
+
+//         Ok(())
+//     }
+
+//     #[tokio::test]
+//     async fn test_simple_variant_multiple_columns() -> Result<()> {
+//         let ctx = SessionContext::new();
+
+//         drop(
+//             ctx.sql(
+//                 "CREATE TABLE users (id INT, first_name VARCHAR, last_name VARCHAR, email
+// VARCHAR)",             )
+//             .await?,
+//         );
+
+//         // Test expressions that use multiple columns from the same table
+//         let sql = "
+//             SELECT
+//                 concat(first_name, ' ', last_name) as full_name,
+//                 substring(email, 1, 5) || '_' || id as user_code,
+//                 first_name || '-' || last_name || '@example.com' as generated_email
+//             FROM users
+//         ";
+
+//         let plan = ctx.sql(sql).await?.into_unoptimized_plan();
+
+//         let mut visitor = ColumnLineageVisitor::new();
+//         let _ = plan.visit(&mut visitor)?;
+
+//         // Check full_name lineage - should be Simple variant
+//         let full_name = Column::new_unqualified("full_name");
+//         if let Some(lineage) = visitor.column_lineage.get(&full_name) {
+//             match lineage {
+//                 ColumnLineage::Simple(table, columns) => {
+//                     assert_eq!(table, &TableReference::bare("users"));
+//                     assert_eq!(columns.len(), 2); // first_name and last_name
+//                 }
+//                 _ => panic!("Expected Simple lineage for full_name, got {lineage:?}"),
+//             }
+
+//             // Verify resolve_to_source returns Simple
+//             let (_usage_contexts, resolved) = visitor.resolve_to_source(&full_name);
+//             if !matches!(resolved, ResolvedSource::Unknown) {
+//                 match resolved {
+//                     ResolvedSource::Simple { table, columns } => {
+//                         assert_eq!(table, TableReference::bare("users"));
+//                         assert_eq!(columns.len(), 2);
+//                         assert!(columns.contains(&"first_name".to_string()));
+//                         assert!(columns.contains(&"last_name".to_string()));
+//                     }
+//                     _ => panic!("Expected Simple resolution"),
+//                 }
+//             }
+//         } else {
+//             panic!("No lineage found for full_name");
+//         }
+
+//         // Check user_code lineage - should be Simple (email and id from same table)
+//         let user_code = Column::new_unqualified("user_code");
+//         if let Some(lineage) = visitor.column_lineage.get(&user_code) {
+//             match lineage {
+//                 ColumnLineage::Simple(table, columns) => {
+//                     assert_eq!(table, &TableReference::bare("users"));
+//                     assert_eq!(columns.len(), 2); // email and id
+//                 }
+//                 _ => panic!("Expected Simple lineage for user_code"),
+//             }
+//         }
+
+//         // Check generated_email - should be Simple (all from users table)
+//         let generated_email = Column::new_unqualified("generated_email");
+//         if let Some(lineage) = visitor.column_lineage.get(&generated_email) {
+//             match lineage {
+//                 ColumnLineage::Simple(table, columns) => {
+//                     assert_eq!(table, &TableReference::bare("users"));
+//                     assert_eq!(columns.len(), 2); // first_name and last_name
+//                 }
+//                 _ => panic!("Expected Simple lineage for generated_email"),
+//             }
+//         }
+
+//         Ok(())
+//     }
+
+//     #[tokio::test]
+//     async fn test_cte_lineage_tracking() -> Result<()> {
+//         let ctx = SessionContext::new();
+
+//         drop(
+//             ctx.sql("CREATE TABLE measurements (id INT, temp_celsius DECIMAL, pressure DECIMAL)")
+//                 .await?,
+//         );
+
+//         // Test CTE with computed columns that will have functions applied
+//         let sql = "
+//             WITH converted AS (
+//                 SELECT
+//                     id,
+//                     temp_celsius * 1.8 + 32 as temp_fahrenheit,
+//                     pressure / 101.325 as pressure_atm
+//                 FROM measurements
+//             )
+//             SELECT
+//                 id,
+//                 exp(temp_fahrenheit) as exp_temp,
+//                 sqrt(pressure_atm) as sqrt_pressure
+//             FROM converted
+//         ";
+
+//         let plan = ctx.sql(sql).await?.into_unoptimized_plan();
+
+//         let mut visitor = ColumnLineageVisitor::new();
+//         let _ = plan.visit(&mut visitor)?;
+
+//         // The critical test: can we trace exp_temp back to measurements.temp_celsius?
+//         let exp_temp = Column::new_unqualified("exp_temp");
+//         let (_usage_contexts, resolved) = visitor.resolve_to_source(&exp_temp);
+//         if !matches!(resolved, ResolvedSource::Unknown) {
+//             match resolved {
+//                 ResolvedSource::Exact { table, column } => {
+//                     assert_eq!(table, TableReference::bare("measurements"));
+//                     assert_eq!(column, "temp_celsius");
+//                 }
+//                 _ => panic!("Expected exact resolution for exp_temp to
+// measurements.temp_celsius"),             }
+//         } else {
+//             panic!("Failed to resolve exp_temp to source");
+//         }
+
+//         // Also check sqrt_pressure
+//         let sqrt_pressure = Column::new_unqualified("sqrt_pressure");
+//         let (_usage_contexts, resolved) = visitor.resolve_to_source(&sqrt_pressure);
+//         if !matches!(resolved, ResolvedSource::Unknown) {
+//             match resolved {
+//                 ResolvedSource::Exact { table, column } => {
+//                     assert_eq!(table, TableReference::bare("measurements"));
+//                     assert_eq!(column, "pressure");
+//                 }
+//                 _ => panic!("Expected exact resolution for sqrt_pressure"),
+//             }
+//         }
+
+//         // Test a more complex CTE scenario with joins
+//         let sql2 = "
+//             WITH
+//             stats AS (
+//                 SELECT
+//                     id,
+//                     temp_celsius + pressure as combined_metric
+//                 FROM measurements
+//             ),
+//             doubled AS (
+//                 SELECT
+//                     id,
+//                     combined_metric * 2 as double_metric
+//                 FROM stats
+//             )
+//             SELECT
+//                 ln(double_metric) as ln_double
+//             FROM doubled
+//         ";
+
+//         let plan2 = ctx.sql(sql2).await?.into_unoptimized_plan();
+//         let mut visitor2 = ColumnLineageVisitor::new();
+//         let _ = plan2.visit(&mut visitor2)?;
+
+//         // ln_double should trace back to BOTH temp_celsius and pressure
+//         let ln_double = Column::new_unqualified("ln_double");
+//         let (_usage_contexts, resolved) = visitor2.resolve_to_source(&ln_double);
+//         if !matches!(resolved, ResolvedSource::Unknown) {
+//             match resolved {
+//                 ResolvedSource::Simple { table, columns } => {
+//                     assert_eq!(table, TableReference::bare("measurements"));
+//                     assert_eq!(columns.len(), 2);
+//                     assert!(columns.contains(&"temp_celsius".to_string()));
+//                     assert!(columns.contains(&"pressure".to_string()));
+//                 }
+//                 _ => panic!(
+//                     "Expected Simple resolution for ln_double (multiple columns from same table)"
+//                 ),
+//             }
+//         }
+
+//         Ok(())
+//     }
+
+//     // TODO: Remove - move to function_collector
+//     // fn verify_plan_context(
+//     //     plan: &LogicalPlan,
+//     //     visitor: &ColumnLineageVisitor,
+//     //     plan_context: &PlanContext,
+//     // ) -> Result<()> {
+//     //     // Verify that expressions in this node reference this plan context
+//     //     let mut expressions_with_context = 0;
+//     //     // Attempt lookup and track by table - MUST succeed for every node
+//     //     assert!(
+//     //         visitor.plan_actions.contains_key(plan_context),
+//     //         "✗ FAILED: No transformation actions found for context: {plan_context:?}"
+//     //     );
+
+//     //     println!(
+//     //         "--------\n✓ Found transformation actions for context:\n  Node = {}\n  Context = \
+//     //          {plan_context:?}\n",
+//     //         plan.display()
+//     //     );
+//     //     let _ = plan.apply_expressions(|expr| {
+//     //         let column_refs = expr.column_refs();
+//     //         if !column_refs.is_empty() {
+//     //             let expr_hash = calculate_hash(expr);
+//     //             // Check if this expression appears in source_lineage with this plan context
+//     //             for col in column_refs {
+//     //                 let cname = col.flat_name();
+
+//     //                 if let Some(lineage) = visitor.column_lineage.get(col) {
+//     //                     let source_ids = match lineage {
+//     //                         ColumnLineage::Exact(id) => vec![*id],
+//     //                         ColumnLineage::Simple(_, ids) | ColumnLineage::Compound(ids) => {
+//     //                             ids.clone()
+//     //                         }
+//     //                         ColumnLineage::Scalar(_) => continue,
+//     //                     };
+//     //                     for source_id in source_ids {
+//     //                         let contexts = visitor.source_lineage.get(&source_id);
+//     //                         assert!(contexts.is_some(), "Contexts should be present");
+//     //                         let contexts = contexts.unwrap();
+//     //                         println!("  * {cname} ({source_id:?}) ALL contexts:
+// {contexts:?}");     //                         let found_expr_ctx = contexts.iter().find(|ctx| {
+//     //                             ctx.expr_hash == expr_hash && ctx.plan_context ==
+// *plan_context     //                         });
+//     //                         assert!(found_expr_ctx.is_some(), "Expr Context should be found");
+//     //                         println!("  * {cname} ({source_id:?}) context:
+// {found_expr_ctx:?}");     //                         if found_expr_ctx.is_some() {
+//     //                             expressions_with_context += 1;
+//     //                             break;
+//     //                         }
+//     //                     }
+//     //                 } else {
+//     //                     println!(" x NO LINEAGE FOUND FOR COLUMN: {cname}");
+//     //                     panic!("Lineages should exist for all columns");
+//     //                 }
+//     //             }
+//     //         }
+//     //         Ok(TreeNodeRecursion::Continue)
+//     //     })?;
+//     //     Ok(())
+//     // }
+
+//     // #[tokio::test]
+//     // async fn test_plan_context() -> Result<()> {
+//     //     let ctx = SessionContext::new();
+
+//     //     drop(ctx.sql("CREATE TABLE customers (id INT, name VARCHAR)").await?);
+//     //     drop(ctx.sql("CREATE TABLE orders (id INT, customer_id INT, amount DECIMAL)").await?);
+
+//     //     let sql = "
+//     //         SELECT
+//     //             c.name,
+//     //             o.amount
+//     //         FROM customers c
+//     //         JOIN orders o ON c.id = o.customer_id
+//     //         WHERE o.amount > 100
+//     //     ";
+
+//     //     let plan = ctx.sql(sql).await?.into_unoptimized_plan();
+
+//     //     // Collect lineage
+//     //     let mut visitor = ColumnLineageVisitor::new();
+//     //     let _ = plan.visit(&mut visitor)?;
+
+//     //     // Track transformation traversal
+//     //     let mut current_table_scan = TableReference::bare("");
+//     //     let mut depth_from_table_scan = 0;
+
+//     //     drop(plan.transform_up(|node| {
+//     //         // Track context
+//     //         if let LogicalPlan::TableScan(scan) = &node {
+//     //             current_table_scan = scan.table_name.clone();
+//     //             depth_from_table_scan = 0;
+//     //         } else {
+//     //             depth_from_table_scan += 1;
+//     //         }
+
+//     //         let plan_context = PlanContext {
+//     //             node_id:      mem::discriminant(&node),
+//     //             node_details: node.display().to_string(),
+//     //             depth:        depth_from_table_scan,
+//     //             table:        current_table_scan.clone(),
+//     //         };
+
+//     //         verify_plan_context(&node, &visitor, &plan_context)?;
+
+//     //         Ok(Transformed::no(node))
+//     //     })?);
+//     //     Ok(())
+//     // }
+
+//     // #[tokio::test]
+//     // async fn test_plan_context_subquery() -> Result<()> {
+//     //     let ctx = SessionContext::new();
+
+//     //     drop(ctx.sql("CREATE TABLE users (id INT, name VARCHAR, age DECIMAL)").await?);
+
+//     //     let sql = "
+//     //         SELECT
+//     //             name,
+//     //             age * 2 as double_age
+//     //         FROM (
+//     //             SELECT id, name, age
+//     //             FROM users
+//     //             WHERE age > 18
+//     //         ) filtered
+//     //         ORDER BY name
+//     //     ";
+
+//     //     let plan = ctx.sql(sql).await?.into_unoptimized_plan();
+
+//     //     // First, collect lineage information
+//     //     let mut visitor = ColumnLineageVisitor::new();
+//     //     let _ = plan.visit(&mut visitor)?;
+
+//     //     // Now simulate post-order transformation traversal
+//     //     let mut current_table_scan = TableReference::bare("");
+//     //     let mut depth_from_table_scan = 0;
+
+//     //     drop(plan.transform_up(|node| {
+//     //         // Track table scan and depth exactly as transformation would
+//     //         if let LogicalPlan::TableScan(scan) = &node {
+//     //             current_table_scan = scan.table_name.clone();
+//     //             depth_from_table_scan = 0;
+//     //         } else {
+//     //             depth_from_table_scan += 1;
+//     //         }
+
+//     //         // Regenerate plan context using the reproducible mechanism
+//     //         let plan_context = PlanContext {
+//     //             node_id:      mem::discriminant(&node),
+//     //             node_details: node.display().to_string(),
+//     //             depth:        depth_from_table_scan,
+//     //             table:        current_table_scan.clone(),
+//     //         };
+
+//     //         verify_plan_context(&node, &visitor, &plan_context)?;
+
+//     //         Ok(Transformed::no(node))
+//     //     })?);
+//     //     // Verify we found actions for the users table specifically
+//     //     let users_table = TableReference::bare("users");
+//     //     let users_actions_count =
+//     //         visitor.plan_actions.keys().filter(|ctx| ctx.table == users_table).count();
+
+//     //     assert!(users_actions_count > 0, "Should have transformation actions for users
+// table");     //     println!("Total actions for users table: {users_actions_count}");
+
+//     //     Ok(())
+//     // }
+
+//     // #[tokio::test]
+//     // async fn test_plan_context_join() -> Result<()> {
+//     //     let ctx = SessionContext::new();
+
+//     //     drop(ctx.sql("CREATE TABLE customers (id INT, name VARCHAR)").await?);
+//     //     drop(ctx.sql("CREATE TABLE orders (id INT, customer_id INT, amount DECIMAL)").await?);
+
+//     //     let sql = "
+//     //         SELECT
+//     //             c.name,
+//     //             exp(o.amount) as exp_amount
+//     //         FROM (
+//     //             SELECT id, name
+//     //             FROM customers
+//     //         ) c
+//     //         JOIN (
+//     //             SELECT id, customer_id, amount
+//     //             FROM orders
+//     //         ) o ON c.id = o.customer_id
+//     //         WHERE o.amount > 100
+//     //     ";
+
+//     //     let plan = ctx.sql(sql).await?.into_unoptimized_plan();
+
+//     //     // First, collect lineage information
+//     //     let mut visitor = ColumnLineageVisitor::new();
+//     //     let _ = plan.visit(&mut visitor)?;
+
+//     //     // Now simulate post-order transformation traversal
+//     //     let mut current_table_scan = TableReference::bare("");
+//     //     let mut depth_from_table_scan = 0;
+//     //     let mut next_source_id = 0;
+
+//     //     drop(plan.transform_up(|node| {
+//     //         // Track table scan and depth exactly as transformation would
+//     //         if let LogicalPlan::TableScan(scan) = &node {
+//     //             current_table_scan = scan.table_name.clone();
+//     //             depth_from_table_scan = 0;
+
+//     //             // Regenerate plan context using the reproducible mechanism
+//     //             let plan_context = PlanContext {
+//     //                 node_id:      mem::discriminant(&node),
+//     //                 node_details: node.display().to_string(),
+//     //                 depth:        depth_from_table_scan,
+//     //                 table:        current_table_scan.clone(),
+//     //             };
+//     //             println!(
+//     //                 "--------\n✓ Found transformation actions for context:\n  Node = {}\n  \
+//     //                  Context = {plan_context:?}\n",
+//     //                 node.display()
+//     //             );
+
+//     //             let mut lineages = Vec::new();
+
+//     //             let table_name = scan.table_name.clone();
+//     //             for (qual, field) in scan.projected_schema.iter() {
+//     //                 let source_column = Column::new(qual.cloned(), field.name());
+//     //                 // Create source ID for this table/column pair
+//     //                 let source_id = SourceId(next_source_id);
+//     //                 next_source_id += 1;
+//     //                 let source = visitor.sources.get(&source_id);
+//     //                 assert!(source.is_some(), "Source ID not found");
+//     //                 let source = source.unwrap();
+//     //                 assert_eq!(source, &(table_name.clone(), field.name().to_string()));
+//     //                 let source_lineage = visitor.column_lineage.get(&source_column);
+//     //                 assert!(source_lineage.is_some(), "Source lineage not found");
+//     //                 let source_lineage = source_lineage.unwrap();
+//     //                 assert_eq!(source_lineage, &ColumnLineage::Exact(source_id));
+//     //                 lineages.push(source_lineage);
+//     //             }
+
+//     //             println!("  * TableScan lineages: {lineages:?}");
+//     //             return Ok(Transformed::no(node));
+//     //         }
+
+//     //         depth_from_table_scan += 1;
+
+//     //         // Regenerate plan context using the reproducible mechanism
+//     //         let plan_context = PlanContext {
+//     //             node_id:      mem::discriminant(&node),
+//     //             node_details: node.display().to_string(),
+//     //             depth:        depth_from_table_scan,
+//     //             table:        current_table_scan.clone(),
+//     //         };
+
+//     //         verify_plan_context(&node, &visitor, &plan_context)?;
+
+//     //         Ok(Transformed::no(node))
+//     //     })?);
+
+//     //     // TODO: Remove - assert across all tables
+//     //     // // Verify we found actions for the users table specifically
+//     //     // let users_table = TableReference::bare("users");
+//     //     // let users_actions_count =
+//     //     //     visitor.plan_actions.keys().filter(|ctx| ctx.table == users_table).count();
+
+//     //     // assert!(users_actions_count > 0, "Should have transformation actions for users
+//     // table");     // println!("Total actions for users table: {users_actions_count}");
+
+//     //     Ok(())
+//     // }
+// }

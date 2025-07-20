@@ -2,19 +2,6 @@
 
 ## Critical Information for Working with DataFusion and ClickHouse-DataFusion
 
-### 0. Core Development Principles
-
-**Fact gathering must be done with the SAME underlying pieces that are used for RECOGNITION during transformation.**
-
-This means:
-- Alias generation must use a shared function between collection and transformation phases
-- Function matching must use identical normalization logic
-- Table reference handling must be consistent throughout
-- No ad-hoc string manipulations or brittle comparisons
-- If collection generates an alias one way, transformation MUST recognize it the same way
-
-**Follow what seems to be the theme of doing this properly: fact gathering must be done with the same underlying pieces that are used for RECOGNITION during transformation.**
-
 ### 1. Source Code Locations
 - **DataFusion's source code**: Located at `../datafusion`
 - **datafusion-federation's source code**: Located at `../datafusion-federation`
@@ -35,7 +22,7 @@ As changes are made, it is **IMPERATIVE** that we test both non-federation and f
 
 If there is a:
 - "Field not found" error
-- "Schema mismatch" error  
+- "Schema mismatch" error
 - Any other validation error after the plan has been analyzed
 
 **The source of the error can be found INSIDE THE PLAN'S DEBUG OUTPUT**

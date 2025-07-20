@@ -43,10 +43,15 @@ This is a Rust library that integrates ClickHouse with Apache DataFusion, allowi
    - Automatic query pushdown optimization
    - Enabled by default in Cargo.toml
 
-5. **UDF System** (src/udfs/)
-   - Special handling for ClickHouse-specific functions
-   - `clickhouse()` wrapper prevents DataFusion optimization
-   - Analyzer rules for function pushdown
+5. **Column Lineage System** (src/column_lineage.rs)
+   - Tracks column dependencies through complex query plans
+   - Resolves column references to their table sources
+   - Supports JOIN aliases, subqueries, and computed columns
+
+6. **ClickHouse Function Pushdown** (src/clickhouse_function_pushdown.rs)
+   - Pushes `clickhouse()` functions down to appropriate levels
+   - Uses column lineage for intelligent blocking decisions
+   - Handles federation vs non-federation scenarios
 
 ### Key Design Decisions
 
@@ -54,7 +59,7 @@ This is a Rust library that integrates ClickHouse with Apache DataFusion, allowi
 - Connection pooling for performance (via clickhouse-arrow)
 - Custom context required for full ClickHouse function support
 - String encoding defaults to UTF-8 for DataFusion compatibility
-- Currently uses forked datafusion-federation pending upstream PR
+- Column lineage tracking for sophisticated function pushdown optimization
 
 ### Testing Strategy
 
@@ -65,34 +70,34 @@ Tests use testcontainers to spin up isolated ClickHouse instances. Test modules:
 
 When writing tests, use the `init_clickhouse_context_*` helpers from tests/common/mod.rs.
 
-## ClickHouse Function Pushdown Analyzer
+## ClickHouse Function Pushdown System
 
-### Current Status (as of 2025-07-09)
-- ✅ Basic analyzer test passes (non-federation)
-- ✅ Federation test passes  
-- ✅ Proper TreeNodeRecursion::Jump short-circuiting implemented
-- ✅ Infinite recursion bug fixed
-- 🔄 Ready to test complex join queries
+### Current Status (as of 2025-07-19)
+- ✅ Clean analyzer implementation completed
+- ✅ Column lineage system with ResolvedSource tracking
+- ✅ Proper TreeNode API usage and column dependency resolution
+- 🔄 Ready for testing and refinement
 
 ### Key Implementation Details:
-- Uses two-phase design: ClickHouseFunctionAnalyzer + ClickHousePlanTransformer
-- Proper idempotency with federation-aware guards
-- File: `src/udfs/pushdown_analyzer.rs`
-- Test commands: `just test-analyzer` and `just test-analyzer-federation`
+- **Single-phase design**: Simplified analyzer using column lineage for decision making
+- **Proper column comparison**: Uses `resolve_to_source()` and `disjoin_tables()` instead of naive Column equality
+- **Efficient caching**: Tracks function resolved sources to avoid recomputation
+- **File**: `src/clickhouse_function_pushdown.rs`
 
 ### Technical Architecture:
-1. **Phase 1 (Analysis)**: ClickHouseFunctionAnalyzer discovers clickhouse() functions and maps them to target tables
-2. **Phase 2 (Transformation)**: ClickHousePlanTransformer transforms TableScan nodes and replaces function calls with column references
-3. **Federation Support**: Compile-time feature flags (`#[cfg(feature = "federation")]`) for federation vs non-federation paths
-4. **Efficiency**: Uses `TreeNodeRecursion::Jump` to short-circuit unnecessary tree traversals
+1. **Column Lineage Building**: Creates dependency map for all columns in the plan
+2. **Function Discovery**: Identifies `clickhouse()` functions during traversal
+3. **Intelligent Blocking**: Uses resolved sources to determine if filters/aggregates block pushdown
+4. **Smart Placement**: Pushes functions as low as possible while respecting blocking operations
 
-### Key Fixes Applied:
-- Fixed infinite recursion by removing recursive `transform_plan` calls
-- Added proper `Transformed::new(node, false, TreeNodeRecursion::Jump)` for short-circuiting
-- Implemented federation-aware idempotency guards using `ch_func_*` pattern detection
-- Made analyzer follow DataFusion patterns from push_down_filter.rs
+### Coding Guidelines Applied:
+- No ad-hoc functions - logic kept inline where analyzable
+- Functional style leveraging Rust's capabilities
+- Direct column lineage integration instead of complex pre-computation
+- TreeNode API used correctly with proper visitor patterns
 
 ### Next Steps:
-1. Uncomment complex join test in tests/analyzer.rs
-2. Test and fix any issues with multi-table joins
-3. Enable all commented tests
+1. **Test comprehensive scenarios**: Single table, multi-table, edge cases
+2. **Implement federation-aware wrapping**: Extension nodes vs Projections
+3. **Add join bypass logic**: Use `disjoin_tables()` for compound function analysis
+4. **Performance optimization**: Profile and optimize for large plans

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Column, DFSchema, DataFusionError, Result, qualified_name};
+use datafusion::common::{Column, DataFusionError, Result, qualified_name};
 use datafusion::config::ConfigOptions;
 #[cfg(not(feature = "federation"))]
 use datafusion::logical_expr::Extension;
@@ -43,8 +43,6 @@ pub struct ClickHouseFunction {
     // pub referenced_columns: HashSet<Column>,
     /// Generated alias for the function output
     pub(crate) function_alias: String,
-    /// Tables this function references
-    pub(crate) source_tables:  HashSet<TableReference>,
     /// The target table this function will be pushed to
     pub(crate) target_table:   TableReference,
 }
@@ -54,8 +52,8 @@ pub struct ClickHouseFunction {
 /// consistent fact gathering and recognition.
 ///
 /// This function ONLY uses information available in both phases:
-/// - The inner expression (first arg of clickhouse())
-/// - The return type (second arg of clickhouse())
+/// - The inner expression (first arg of clickhouse func)
+/// - The return type (second arg of clickhouse func)
 /// - The table reference extracted from the expression itself
 fn generate_function_key(inner_expr: &Expr, return_type: &DataType) -> Result<String> {
     // Strip qualifiers to normalize the expression
@@ -76,9 +74,9 @@ fn generate_function_key(inner_expr: &Expr, return_type: &DataType) -> Result<St
 
     // Extract table from the expression itself to generate suffix
     // This ensures we can recreate the same suffix during transformation
-    let table_suffix = extract_table_suffix(&inner_expr)?;
+    let table_suffix = extract_table_suffix(inner_expr)?;
 
-    Ok(format!("{}{}", base_name, table_suffix))
+    Ok(format!("{base_name}{table_suffix}"))
 }
 
 /// Extract a table suffix from an expression by finding the first table reference
@@ -87,7 +85,7 @@ fn extract_table_suffix(expr: &Expr) -> Result<String> {
     let mut table_ref = None;
 
     // Use DataFusion's apply method to find the first column with a table reference
-    expr.apply(|e| {
+    let _ = expr.apply(|e| {
         if let Expr::Column(col) = e {
             if let Some(relation) = &col.relation {
                 table_ref = Some(relation.clone());
@@ -144,7 +142,7 @@ impl AnalyzerRule for ClickHouseFunctionPushdown {
 
         eprintln!("Table functions map:");
         for (table, funcs) in &collector.table_functions {
-            eprintln!("  Table '{}' has functions: {:?}", table, funcs);
+            eprintln!("  Table '{table}' has functions: {funcs:?}");
         }
 
         // Build column action map
@@ -153,13 +151,7 @@ impl AnalyzerRule for ClickHouseFunctionPushdown {
         // Phase 2: Transform with state tracking
         let mut transformer =
             PlanTransformer::new(collector.functions, collector.table_functions, column_actions);
-        let result = transformer.transform(plan);
-
-        eprintln!("===== FINAL TRANSFORMED PLAN =====");
-        eprintln!("{:?}", result);
-        eprintln!("===== END PLAN =====");
-
-        Ok(result?)
+        transformer.transform(plan)
     }
 
     fn name(&self) -> &'static str { "clickhouse_function_pushdown" }
@@ -172,11 +164,6 @@ SELECT p3.name FROM  (
   JOIN person2 p2 ON p1.id = p2.id
 ) AS p3
 */
-
-struct AliasVisitor {
-    // Table name -> Column w/ alias
-    mapping: HashMap<String, String>,
-}
 
 /// Represents a collected `ClickHouse` function during the analysis phase.
 /// This is a temporary representation used while collecting functions from the plan.
@@ -250,15 +237,15 @@ impl FunctionCollector {
                         if is_clickhouse_function(func) {
                             let mut column_refs: HashSet<(Option<String>, String)> = HashSet::new();
                             // Just resolve the table to populate table_to_index
-                            func.args[0].apply(|e| {
+                            let _ = func.args[0].apply(|e| {
                                 if let Expr::Column(col) = e {
                                     let t_ref = col
                                         .relation
                                         .as_ref()
-                                        .map(|t| t.table())
+                                        .map(TableReference::table)
                                         .map(ToString::to_string);
                                     let name = col.name();
-                                    column_refs.insert((t_ref, name.to_string()));
+                                    let _ = column_refs.insert((t_ref, name.to_string()));
                                     // if let Some(relation) = &col.relation {
                                     //     // match relation {
                                     //     //     TableReference::Full { table: t, .. } => {
@@ -370,7 +357,7 @@ impl FunctionCollector {
                 }
                 _ => {
                     // For other nodes, check expressions but skip clickhouse functions
-                    node.apply_expressions(|expr| {
+                    let _ = node.apply_expressions(|expr| {
                         self.record_columns_in_expr(expr, false)?;
                         Ok(TreeNodeRecursion::Continue)
                     })?;
@@ -384,11 +371,11 @@ impl FunctionCollector {
 
     /// Record columns in an expression, tracking whether they're inside a clickhouse function
     fn record_columns_in_expr(&mut self, expr: &Expr, inside_function: bool) -> Result<()> {
-        expr.apply(|e| {
+        let _ = expr.apply(|e| {
             match e {
                 Expr::ScalarFunction(func) if is_clickhouse_function(func) => {
                     // Record columns inside this function
-                    if func.args.len() >= 1 {
+                    if !func.args.is_empty() {
                         self.record_columns_in_expr(&func.args[0], true)?;
                     }
                     // Don't traverse deeper into the function
@@ -397,9 +384,9 @@ impl FunctionCollector {
                 Expr::Column(col) => {
                     let qualified_name = qualified_name(col.relation.as_ref(), &col.name);
                     if inside_function {
-                        self.columns_in_functions.insert(qualified_name);
+                        let _ = self.columns_in_functions.insert(qualified_name);
                     } else {
-                        self.columns_outside_functions.insert(qualified_name);
+                        let _ = self.columns_outside_functions.insert(qualified_name);
                     }
                     Ok(TreeNodeRecursion::Continue)
                 }
@@ -426,8 +413,6 @@ impl FunctionCollector {
 
         eprintln!("Collecting function:");
         eprintln!("  Original: {}", Expr::ScalarFunction(func.clone()));
-        eprintln!("  Inner expr: {}", inner_expr);
-        eprintln!("  Generated key: {}", key);
 
         // Resolve table for pushdown targeting
         let table_info = self.resolve_table_with_index(&inner_expr);
@@ -436,26 +421,25 @@ impl FunctionCollector {
 
             // Also store under any table aliases found in the expression
             // This ensures we can find functions when the TableScan uses the actual table name
-            let _ = inner_expr.apply(|e| {
+            drop(inner_expr.apply(|e| {
                 if let Expr::Column(col) = e {
                     if let Some(relation) = &col.relation {
                         let alias_name = relation.to_string();
                         if &alias_name != table_name {
-                            eprintln!("  Also storing function under alias '{}'", alias_name);
                             self.table_functions.entry(alias_name).or_default().push(key.clone());
                         }
                     }
                 }
                 Ok(TreeNodeRecursion::Continue)
-            });
+            }));
         }
 
         // Track columns used by this function using DataFusion's column_refs
         let columns = inner_expr.column_refs();
         for col in columns {
             let qualified_name = qualified_name(col.relation.as_ref(), &col.name);
-            self.columns_in_functions.insert(qualified_name.clone());
-            self.column_to_function.insert(qualified_name, key.clone());
+            let _ = self.columns_in_functions.insert(qualified_name.clone());
+            drop(self.column_to_function.insert(qualified_name, key.clone()));
         }
 
         // Store the function with its key
@@ -503,7 +487,7 @@ impl FunctionCollector {
             } else {
                 let idx = self.next_id;
                 self.next_id += 1;
-                drop(self.table_to_index.insert(table_name.clone(), idx));
+                let _ = self.table_to_index.insert(table_name.clone(), idx);
                 idx
             };
             (table_name, index)
@@ -523,7 +507,7 @@ impl FunctionCollector {
                 // Column only used inside functions - replace
                 ColumnAction::Replace { function_alias: func_alias.clone() }
             };
-            action_map.insert(col_name.clone(), action);
+            drop(action_map.insert(col_name.clone(), action));
         }
 
         debug!("Column action map:");
@@ -565,7 +549,7 @@ fn strip_qualifiers(expr: &Expr) -> Result<Expr> {
 fn extract_qualifier_from_expr(expr: &Expr) -> Option<TableReference> {
     let mut qualifier = None;
 
-    let _ = expr.apply(|e| {
+    drop(expr.apply(|e| {
         if let Expr::Column(col) = e {
             if let Some(relation) = &col.relation {
                 qualifier = Some(relation.clone());
@@ -573,7 +557,7 @@ fn extract_qualifier_from_expr(expr: &Expr) -> Option<TableReference> {
             }
         }
         Ok(TreeNodeRecursion::Continue)
-    });
+    }));
 
     qualifier
 }
@@ -581,7 +565,6 @@ fn extract_qualifier_from_expr(expr: &Expr) -> Option<TableReference> {
 struct PlanTransformer {
     functions:       HashMap<String, CollectedClickHouseFunction>,
     table_functions: HashMap<String, Vec<String>>,
-    pushed_aliases:  HashSet<String>,
     column_actions:  HashMap<String, ColumnAction>,
 }
 
@@ -591,11 +574,10 @@ impl PlanTransformer {
         table_functions: HashMap<String, Vec<String>>,
         column_actions: HashMap<String, ColumnAction>,
     ) -> Self {
-        // Collect all function aliases that have been pushed
-        let pushed_aliases = functions.keys().cloned().collect();
-        Self { functions, table_functions, pushed_aliases, column_actions }
+        Self { functions, table_functions, column_actions }
     }
 
+    #[expect(clippy::too_many_lines)]
     fn transform(&mut self, plan: LogicalPlan) -> Result<LogicalPlan> {
         // Transform bottom-up to ensure children are processed first
         plan.transform_up(|node| {
@@ -622,7 +604,6 @@ impl PlanTransformer {
                                 inner_expr:     f.inner_expr.clone(),
                                 return_type:    f.return_type.clone(),
                                 original_expr:  f.original_expr.clone(),
-                                source_tables:  HashSet::default(),
                                 target_table:   TableReference::bare(table_name),
                             })
                             .collect();
@@ -765,10 +746,6 @@ impl PlanTransformer {
             }
         })
         .map(|t| t.data)
-    }
-
-    fn transform_expr(&self, expr: Expr, _schema: &DFSchema) -> Result<Transformed<Expr>> {
-        Ok(Transformed::no(expr))
     }
 }
 

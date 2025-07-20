@@ -19,5 +19,7 @@ pub use super::table_provider::ClickHouseTableProvider;
 pub use super::udfs::register_clickhouse_functions;
 pub use super::udfs::simple::clickhouse_func_udf;
 
+pub use super::clickhouse_function_pushdown::ClickHouseFunctionPushdown;
+
 // TODO: crate::federation exports (esp traits)
 // TODO: crate::context exports (esp traits)
