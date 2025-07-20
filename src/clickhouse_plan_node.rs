@@ -31,7 +31,8 @@ impl ClickHouseFunctionNode {
         eprintln!("   📦 Input plan: {}", input.display_indent());
         eprintln!("   🔧 Functions: {}", functions.len());
         for (i, func) in functions.iter().enumerate() {
-            eprintln!("   🔧 Function[{}]: {}", i, func);
+            eprintln!("   🔧 Function[{i}]: {func}");
+            eprintln!("   🔧 Function[{i}] Debug: {func:?}");
         }
         eprintln!("   📊 Schema columns: {:?}", schema.columns());
 

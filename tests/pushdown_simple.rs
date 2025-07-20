@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use clickhouse_datafusion::prelude::ClickHouseFunctionPushdown;
 use clickhouse_datafusion::clickhouse_plan_node::CLICKHOUSE_FUNCTION_NODE_NAME;
+use clickhouse_datafusion::udfs::pushdown::clickhouse_udf_pushdown_udf;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::Result;
 use datafusion::datasource::empty::EmptyTable;
@@ -58,6 +59,9 @@ fn plan_type_name(plan: &LogicalPlan) -> &'static str {
 fn create_test_context() -> Result<SessionContext> {
     let ctx = SessionContext::new();
 
+    // Register the ClickHouse pushdown UDF
+    ctx.register_udf(clickhouse_udf_pushdown_udf());
+
     // Register the ClickHouse function pushdown analyzer
     ctx.add_analyzer_rule(Arc::new(ClickHouseFunctionPushdown));
 
@@ -80,11 +84,11 @@ fn create_test_context() -> Result<SessionContext> {
 
 #[cfg(feature = "test-utils")]
 #[tokio::test]
-async fn test_simple_projection_with_exp_function() -> Result<()> {
-    // Test: SELECT exp(col1 + col2), col2 * 2, UPPER(col3) FROM table1
+async fn test_simple_projection_with_clickhouse_function() -> Result<()> {
+    // Test: SELECT clickhouse(exp(col1 + col2), 'Float64'), col2 * 2, UPPER(col3) FROM table1  
     // Expected: Entire plan wrapped because all functions and columns from same table
 
-    let sql = "SELECT exp(col1 + col2), col2 * 2, UPPER(col3) FROM table1";
+    let sql = "SELECT clickhouse(exp(col1 + col2), 'Float64'), col2 * 2, UPPER(col3) FROM table1";
 
     let ctx = create_test_context()?;
     let analyzed_plan = ctx.sql(sql).await?.into_optimized_plan()?; // Analyzer runs automatically
@@ -103,11 +107,11 @@ async fn test_simple_projection_with_exp_function() -> Result<()> {
 
 #[cfg(feature = "test-utils")]
 #[tokio::test]
-async fn test_filter_with_exp_function() -> Result<()> {
-    // Test: SELECT col2, col3 FROM table1 WHERE exp(col1 * 2) > 10 AND col3 LIKE '%test%'
-    // Expected: Filter wrapped because it contains exp function, outer projection has no functions
+async fn test_filter_with_clickhouse_function() -> Result<()> {
+    // Test: SELECT col2, col3 FROM table1 WHERE clickhouse(exp(col1), 'Float64') > 10
+    // Expected: Filter wrapped because it contains ClickHouse function, outer projection has no functions
 
-    let sql = "SELECT col2, col3 FROM table1 WHERE exp(col1) > 10";
+    let sql = "SELECT col2, col3 FROM table1 WHERE clickhouse(exp(col1), 'Float64') > 10";
 
     let ctx = create_test_context()?;
     let analyzed_plan = ctx.sql(sql).await?.into_optimized_plan()?;
