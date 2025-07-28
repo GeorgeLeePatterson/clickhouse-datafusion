@@ -53,10 +53,10 @@ pub enum JoinPushDown {
 /// A [`TableProvider`] for remote `ClickHouse` sql tables.
 #[derive(Clone)]
 pub struct SqlTable {
-    name:                String,
-    pool:                ClickHouseConnectionPool,
-    schema:              SchemaRef,
     pub table_reference: TableReference,
+    pub(crate) pool:     ClickHouseConnectionPool,
+    name:                String,
+    schema:              SchemaRef,
     dialect:             Option<Arc<ClickHouseDialect>>,
     exprs:               Option<Vec<Expr>>,
 }
@@ -148,6 +148,12 @@ impl SqlTable {
         builder.limit(0, limit)?.build()
     }
 
+    #[must_use]
+    pub fn name(&self) -> &str { &self.name }
+
+    #[must_use]
+    pub fn clone_pool(&self) -> ClickHouseConnectionPool { self.pool.clone() }
+
     fn create_physical_plan(
         &self,
         projection: Option<&Vec<usize>>,
@@ -162,14 +168,7 @@ impl SqlTable {
     }
 
     // Return the current memory location of the object as a unique identifier
-    #[cfg(feature = "federation")]
-    fn unique_id(&self) -> usize { std::ptr::from_ref(self) as usize }
-
-    #[must_use]
-    pub fn name(&self) -> &str { &self.name }
-
-    #[must_use]
-    pub fn clone_pool(&self) -> ClickHouseConnectionPool { self.pool.clone() }
+    pub(crate) fn unique_id(&self) -> usize { std::ptr::from_ref(self) as usize }
 
     fn dialect(&self) -> &(dyn Dialect + Send + Sync) {
         match &self.dialect {

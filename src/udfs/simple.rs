@@ -167,7 +167,7 @@ mod tests {
             ]])?);
         drop(ctx.register_table("people", provider)?);
         let sql =
-            "SELECT name, clickhousefunc('splitByChar('','', names)', 'List(Utf8)') FROM people";
+            "SELECT id, clickhousefunc('splitByChar('','', names)', 'List(Utf8)') FROM people";
         let df = ctx.sql(&format!("EXPLAIN {sql}")).await?;
         let results = df.collect().await?;
         println!("EXPLAIN: {results:?}");

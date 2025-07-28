@@ -13,9 +13,16 @@ default:
 
 # --- TESTS ---
 
+# Runs unit tests first then integration
 test:
-    CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
+    CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test --lib \
+     --no-default-features -F test-utils -- --nocapture --show-output
+    CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test --lib \
      -F test-utils -- --nocapture --show-output
+    CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
+     --no-default-features -F test-utils --test "e2e" -- --nocapture --show-output
+    CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
+     -F test-utils --test "e2e" -- --nocapture --show-output
 
 test-one test_name:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \

@@ -32,7 +32,7 @@ clickhouse-arrow = { version = "0.1" }
 dashmap = "6"
 datafusion = { version = "48" }
 # TODO: Remove
-# datafusion = { path = "../../test/datafusion/datafusion/core" }
+# datafusion = { path = "../datafusion/datafusion/core" }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 pin-project = "1"
@@ -115,8 +115,3 @@ debug = "full"
 [[test]]
 name = "e2e"
 required-features = ["test-utils"]
-
-[[test]]
-name = "analyze"
-required-features = ["test-utils"]
-

@@ -29,17 +29,6 @@ macro_rules! test_func {
 macro_rules! e2e_test {
     ($name:ident, $test_fn:expr, $dirs:expr, $conf:expr) => {
         #[tokio::test(flavor = "multi_thread")]
-        async fn $name() {
-            let name = stringify!($name);
-            let result =
-                $crate::common::run_test_with_cleanup(name, $test_fn, Some($dirs), $conf).await;
-            if let Err(panic) = result {
-                std::panic::resume_unwind(panic);
-            }
-        }
-    };
-    (err => $name:ident, $test_fn:expr, $dirs:expr, $conf:expr) => {
-        #[tokio::test(flavor = "multi_thread")]
         async fn $name() -> ::clickhouse_datafusion::prelude::datafusion::error::Result<()> {
             let name = stringify!($name);
             $crate::common::run_test_with_errors(name, $test_fn, Some($dirs), $conf).await

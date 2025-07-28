@@ -6,7 +6,6 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
 pub use datafusion_federation; // Re-export
@@ -14,7 +13,6 @@ use datafusion_federation::sql::{
     RemoteTableRef, SQLExecutor, SQLFederationProvider, SQLTableSource,
 };
 use datafusion_federation::{FederatedTableProviderAdaptor, FederatedTableSource};
-use futures_util::TryStreamExt;
 use tracing::debug;
 
 use crate::dialect::ClickHouseDialect;
@@ -91,14 +89,7 @@ impl SQLExecutor for ClickHouseTableProvider {
     }
 
     fn execute(&self, query: &str, schema: SchemaRef) -> Result<SendableRecordBatchStream> {
-        let pool = self.writer.clone();
-        let query = query.to_string();
-        let exec_schema = Arc::clone(&schema);
-        let stream = futures_util::stream::once(async move {
-            pool.connect().await?.query_arrow(&query, &[], Some(exec_schema)).await
-        })
-        .try_flatten();
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+        self.execute_sql(query, schema)
     }
 
     async fn table_names(&self) -> Result<Vec<String>> {

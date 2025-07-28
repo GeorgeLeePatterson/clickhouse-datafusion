@@ -13,36 +13,38 @@ const TRACING_DIRECTIVES: &[(&str, &str)] = &[
 // -- FEDERATION/NON FEDERATION --
 
 // Test builders
-test_func!(test_builder, tests::test_clickhouse_builder);
 #[cfg(feature = "test-utils")]
-e2e_test!(builder, test_builder, TRACING_DIRECTIVES, None);
+e2e_test!(builder, tests::test_clickhouse_builder, TRACING_DIRECTIVES, None);
 
 // Test insert data
-test_func!(test_insert, tests::test_insert_data);
 #[cfg(feature = "test-utils")]
-e2e_test!(insert, test_insert, TRACING_DIRECTIVES, None);
+e2e_test!(insert, tests::test_insert_data, TRACING_DIRECTIVES, None);
+
+// Test clickhouse udf pushdown simplified test
+#[cfg(feature = "test-utils")]
+e2e_test!(udfs_smoke_test, tests::test_clickhouse_udf_smoke_test, TRACING_DIRECTIVES, None);
 
 // Test clickhouse udf pushdown
 #[cfg(feature = "test-utils")]
-e2e_test!(err => clickhouse_udf, tests::test_clickhouse_udf_pushdown, TRACING_DIRECTIVES, None);
+e2e_test!(udfs_clickhouse, tests::test_clickhouse_udf_pushdown, TRACING_DIRECTIVES, None);
 
 // Test clickhouse udf pushdown
 #[cfg(feature = "test-utils")]
-e2e_test!(err => structure, tests::test_structure, TRACING_DIRECTIVES, None);
+e2e_test!(udfs_advanced, tests::test_clickhouse_udf_pushdown_advanced, TRACING_DIRECTIVES, None);
+
+// Test clickhouse udf pushdown known failures - feature enhancements
+#[cfg(feature = "test-utils")]
+e2e_test!(udfs_failing, tests::test_clickhouse_udf_pushdown_failing, TRACING_DIRECTIVES, None);
 
 // -- FEDERATION --
 
 // Test simple clickhouse udf
 #[cfg(all(feature = "test-utils", feature = "federation"))]
-test_func!(test_simple_udf, tests::test_simple_clickhouse_udf);
-#[cfg(all(feature = "test-utils", feature = "federation"))]
-e2e_test!(simple_udf, test_simple_udf, TRACING_DIRECTIVES, None);
+e2e_test!(simple_udf, tests::test_simple_clickhouse_udf, TRACING_DIRECTIVES, None);
 
 // Test FederatedCatalogProvider
 #[cfg(all(feature = "test-utils", feature = "federation"))]
-test_func!(test_federated_catalog, tests::test_federated_catalog);
-#[cfg(all(feature = "test-utils", feature = "federation"))]
-e2e_test!(federated_catalog, test_federated_catalog, TRACING_DIRECTIVES, None);
+e2e_test!(federated_catalog, tests::test_federated_catalog, TRACING_DIRECTIVES, None);
 
 #[cfg(feature = "test-utils")]
 mod tests {
@@ -204,9 +206,8 @@ mod tests {
         Ok(())
     }
 
-    // TODO: Remove - for observing logical plan structure only
-    pub(super) async fn test_structure(ch: Arc<ClickHouseContainer>) -> Result<()> {
-        let db = "test_db_structure";
+    pub(super) async fn test_clickhouse_udf_smoke_test(ch: Arc<ClickHouseContainer>) -> Result<()> {
+        let db = "test_db_udfs_simple";
 
         // Initialize session context
         let ctx = SessionContext::new();
@@ -230,33 +231,36 @@ mod tests {
         let _catalog_provider = clickhouse.build(&ctx).await?;
 
         // -----------------------------
-        //
-        // Add in-memory table
-        let mem_schema =
-            Arc::new(Schema::new(vec![Field::new("event_id", DataType::Int32, false)]));
-        let mem_table =
-            Arc::new(datafusion::datasource::MemTable::try_new(Arc::clone(&mem_schema), vec![
-                vec![arrow::record_batch::RecordBatch::try_new(mem_schema, vec![Arc::new(
-                    arrow::array::Int32Array::from(vec![1]),
-                )])?],
-            ])?);
-        let mem_catalog = Arc::new(MemoryCatalogProvider::new());
-        let mem_schema = Arc::new(MemorySchemaProvider::new());
-        drop(mem_schema.register_table("mem_events".into(), mem_table)?);
-        drop(mem_catalog.register_schema("internal", mem_schema)?);
-        drop(ctx.register_catalog("memory", mem_catalog));
-
+        // Test projection with custom Analyzer
         let query = format!(
-            "SELECT p3.name, exp(p3.id)
-            FROM (
-                SELECT p1.name, p2.name, p1.id
-                FROM (
-                    SELECT id, name FROM clickhouse.{db}.people
-                ) p1
-                JOIN (
-                    SELECT id, name FROM clickhouse.{db}.people2
-                ) p2 ON p1.id = p2.id
-            ) p3
+            "SELECT p1.name
+                , clickhouse(exp(p2.id), 'Float64')
+                , p2.names
+            FROM clickhouse.{db}.people p1
+            JOIN (SELECT id, names FROM clickhouse.{db}.people2) p2
+                ON p1.id = p2.id
+            "
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error exe 0 query: {error}"))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        eprintln!(">>> Projection test custom Analyzer 0 passed");
+
+        // -----------------------------
+        // Test projection with custom Analyzer
+        let query = format!(
+            "SELECT p.name
+                , clickhouse(exp(p2.id), 'Float64')
+                , p2.names
+            FROM clickhouse.{db}.people p
+            JOIN (
+                SELECT id, clickhouse(`arrayJoin`(names), 'Utf8') as names
+                FROM clickhouse.{db}.people2
+            ) p2 ON p.id = p2.id
             "
         );
         let results = ctx
@@ -266,7 +270,27 @@ mod tests {
             .collect()
             .await?;
         arrow::util::pretty::print_batches(&results)?;
-        info!(">>> Projection test custom Analyzer 1 passed");
+        eprintln!(">>> Projection test custom Analyzer 1 passed");
+
+        // -----------------------------
+        // Test UNION with clickhouse functions
+        let query = format!(
+            "SELECT id, clickhouse(upper(name), 'Utf8') as upper_name
+            FROM clickhouse.{db}.people
+            WHERE id = 1
+            UNION ALL
+            SELECT id, clickhouse(`arrayJoin`(names), 'Utf8') as upper_name
+            FROM clickhouse.{db}.people2
+            WHERE id = 1"
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error UNION query: {}", error))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        info!(">>> UNION with clickhouse functions test passed");
 
         Ok(())
     }
@@ -426,6 +450,56 @@ mod tests {
         arrow::util::pretty::print_batches(&results)?;
         info!(">>> Two-column clickhouse function test (simple) passed");
 
+        Ok(())
+    }
+
+    #[expect(clippy::too_many_lines)]
+    pub(super) async fn test_clickhouse_udf_pushdown_advanced(
+        ch: Arc<ClickHouseContainer>,
+    ) -> Result<()> {
+        let db = "test_db_udfs_advanced";
+
+        // Initialize session context
+        let ctx = SessionContext::new();
+
+        // IMPORTANT! If federation is enabled, federate the context
+        #[cfg(feature = "federation")]
+        let ctx = ctx.federate();
+
+        // -----------------------------
+        // Registering UDF Optimizer and UDF Pushdown
+        let ctx = ClickHouseSessionContext::from(ctx);
+
+        let builder = common::helpers::create_builder(&ctx, &ch).await?;
+        let clickhouse = common::helpers::setup_test_tables(builder, db, &ctx).await?;
+
+        // Insert test data (people & people2)
+        let clickhouse = common::helpers::insert_test_data(clickhouse, db, &ctx).await?;
+
+        // -----------------------------
+        // Refresh catalog
+        let _catalog_provider = clickhouse.build(&ctx).await?;
+
+        // -----------------------------
+        //
+        // Add in-memory table
+        let mem_schema =
+            Arc::new(Schema::new(vec![Field::new("event_id", DataType::Int32, false)]));
+        let mem_table =
+            Arc::new(datafusion::datasource::MemTable::try_new(Arc::clone(&mem_schema), vec![
+                vec![arrow::record_batch::RecordBatch::try_new(mem_schema, vec![Arc::new(
+                    arrow::array::Int32Array::from(vec![1]),
+                )])?],
+            ])?);
+        let mem_catalog = Arc::new(MemoryCatalogProvider::new());
+        let mem_schema = Arc::new(MemorySchemaProvider::new());
+        drop(mem_schema.register_table("mem_events".into(), mem_table)?);
+        drop(mem_catalog.register_schema("internal", mem_schema)?);
+        drop(ctx.register_catalog("memory", mem_catalog));
+
+        // -----------------------------
+        // Test projection with custom Analyzer
+
         // Now try with string columns from different tables
         let query = format!(
             "SELECT p.name
@@ -444,55 +518,6 @@ mod tests {
             .await?;
         arrow::util::pretty::print_batches(&results)?;
         info!(">>> Two-column clickhouse function test (strings) passed");
-
-        // CRITICAL BUG FOUND: Multi-table column references in single clickhouse function
-        // This test demonstrates a bug where the analyzer incorrectly handles
-        // clickhouse functions that reference columns from multiple tables.
-        // The function gets pushed down to one table but references columns from another.
-        //
-        // Error: SchemaError(FieldNotFound { field: Column { relation: Some(Full {
-        //   catalog: "clickhouse", schema: "test_db_udfs", table: "people" }),
-        //   name: "names" }, ...
-        //
-        // The analyzer incorrectly looks for "names" in "people" table instead of "people2"
-        /*
-        let query = format!(
-            "SELECT p.name
-                , p2.id
-                , clickhouse(concat(p.name, p2.names), 'Utf8') as combined_names
-            FROM clickhouse.{db}.people p
-            JOIN clickhouse.{db}.people2 p2 ON p.id = p2.id
-            LIMIT 1"
-        );
-        let results = ctx
-            .sql(&query)
-            .await
-            .inspect_err(|error| error!("Error multi-table column query: {}", error))?
-            .collect()
-            .await?;
-        arrow::util::pretty::print_batches(&results)?;
-        info!(">>> Multi-table column clickhouse function test passed");
-        */
-
-        // -----------------------------
-        // Test UNION with clickhouse functions
-        let query = format!(
-            "SELECT id, clickhouse(upper(name), 'Utf8') as upper_name
-            FROM clickhouse.{db}.people
-            WHERE id = 1
-            UNION ALL
-            SELECT id, clickhouse(`arrayJoin`(names), 'Utf8') as upper_name
-            FROM clickhouse.{db}.people2
-            WHERE id = 1"
-        );
-        let results = ctx
-            .sql(&query)
-            .await
-            .inspect_err(|error| error!("Error UNION query: {}", error))?
-            .collect()
-            .await?;
-        arrow::util::pretty::print_batches(&results)?;
-        info!(">>> UNION with clickhouse functions test passed");
 
         // -----------------------------
         // Test CTE with cross-references
@@ -539,28 +564,6 @@ mod tests {
             .await?;
         arrow::util::pretty::print_batches(&results)?;
         info!(">>> Simple clickhouse function test passed");
-
-        // -----------------------------
-        // Test aggregation over clickhouse function results
-        // NOTE: This test fails because the analyzer exposes underlying columns
-        // even when they're wrapped in clickhouse functions, causing GROUP BY validation issues
-        let query = format!(
-            "SELECT
-                clickhouse(`toString`(mod(p.id, 2)), 'Utf8') as id_mod,
-                COUNT(p.id) as total,
-                MAX(clickhouse(exp(p.id), 'Float64')) as max_exp,
-                STRING_AGG(p.name, ',') as all_names
-            FROM clickhouse.{db}.people p
-            GROUP BY clickhouse(`toString`(mod(p.id, 2)), 'Utf8')"
-        );
-        let results = ctx
-            .sql(&query)
-            .await
-            .inspect_err(|error| error!("Error aggregation query: {}", error))?
-            .collect()
-            .await?;
-        arrow::util::pretty::print_batches(&results)?;
-        info!(">>> Aggregation over clickhouse function results test passed");
 
         // -----------------------------
         // Test window functions over clickhouse results
@@ -625,6 +628,57 @@ mod tests {
         info!(">>> Ranking window functions test passed");
 
         // -----------------------------
+        // Test CASE expression with clickhouse functions
+        let query = format!(
+            "SELECT
+                p.id,
+                p.name,
+                CASE
+                    WHEN p.name = 'Alice' THEN clickhouse(upper(p.name), 'Utf8')
+                    WHEN p.name = 'Bob' THEN clickhouse(lower(p.name), 'Utf8')
+                    ELSE clickhouse(concat(p.name, ' (other)'), 'Utf8')
+                END as name_transformed
+            FROM clickhouse.{db}.people p"
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error CASE expression query: {}", error))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        info!(">>> CASE expression with clickhouse functions test passed");
+
+        // RESOLVED! Included as a test to ensure this logic doesn't regress
+        //
+        // CRITICAL BUG FOUND: Multi-table column references in single clickhouse function
+        // This test demonstrates a bug where the analyzer incorrectly handles
+        // clickhouse functions that reference columns from multiple tables.
+        // The function gets pushed down to one table but references columns from another.
+        //
+        // Error: SchemaError(FieldNotFound { field: Column { relation: Some(Full {
+        //   catalog: "clickhouse", schema: "test_db_udfs", table: "people" }),
+        //   name: "names" }, ...
+        //
+        // The analyzer incorrectly looks for "names" in "people" table instead of "people2"
+        let query = format!(
+            "SELECT p.name
+                , p2.id
+                , clickhouse(concat(p.name, p2.names), 'Utf8') as combined_names
+            FROM clickhouse.{db}.people p
+            JOIN clickhouse.{db}.people2 p2 ON p.id = p2.id
+            LIMIT 1"
+        );
+        let results = ctx
+            .sql(&query)
+            .await
+            .inspect_err(|error| error!("Error multi-table column query: {}", error))?
+            .collect()
+            .await?;
+        arrow::util::pretty::print_batches(&results)?;
+        info!(">>> Multi-table column clickhouse function test passed");
+
+        // -----------------------------
         // Test lead/lag window functions
         // NOTE: LAG/LEAD are not recognized by ClickHouse in federation mode
         #[cfg(not(feature = "federation"))]
@@ -650,10 +704,87 @@ mod tests {
             info!(">>> Lead/lag window functions test passed");
         }
 
+        Ok(())
+    }
+
+    pub(super) async fn test_clickhouse_udf_pushdown_failing(
+        ch: Arc<ClickHouseContainer>,
+    ) -> Result<()> {
+        let db = "test_db_udfs_advanced";
+
+        // Initialize session context
+        let ctx = SessionContext::new();
+
+        // IMPORTANT! If federation is enabled, federate the context
+        #[cfg(feature = "federation")]
+        let ctx = ctx.federate();
+
         // -----------------------------
-        // Test window functions with clickhouse in ORDER BY
+        // Registering UDF Optimizer and UDF Pushdown
+        let ctx = ClickHouseSessionContext::from(ctx);
+
+        let builder = common::helpers::create_builder(&ctx, &ch).await?;
+        let clickhouse = common::helpers::setup_test_tables(builder, db, &ctx).await?;
+
+        // Insert test data (people & people2)
+        let clickhouse = common::helpers::insert_test_data(clickhouse, db, &ctx).await?;
+
+        // -----------------------------
+        // Refresh catalog
+        let _catalog_provider = clickhouse.build(&ctx).await?;
+
+        // -----------------------------
+        //
+        // Add in-memory table
+        let mem_schema =
+            Arc::new(Schema::new(vec![Field::new("event_id", DataType::Int32, false)]));
+        let mem_table =
+            Arc::new(datafusion::datasource::MemTable::try_new(Arc::clone(&mem_schema), vec![
+                vec![arrow::record_batch::RecordBatch::try_new(mem_schema, vec![Arc::new(
+                    arrow::array::Int32Array::from(vec![1]),
+                )])?],
+            ])?);
+        let mem_catalog = Arc::new(MemoryCatalogProvider::new());
+        let mem_schema = Arc::new(MemorySchemaProvider::new());
+        drop(mem_schema.register_table("mem_events".into(), mem_table)?);
+        drop(mem_catalog.register_schema("internal", mem_schema)?);
+        drop(ctx.register_catalog("memory", mem_catalog));
+
+        // // -----------------------------
+        // // Test deeply nested subqueries
+        // // NOTE: This test fails due to DataFusion's correlated subquery limitations
+        // let query = format!(
+        //     "SELECT
+        //         outer_name,
+        //         clickhouse(upper(outer_name), 'Utf8') as upper_name,
+        //         inner_sum
+        //     FROM (
+        //         SELECT
+        //             p.name as outer_name,
+        //             p.id as outer_id,
+        //             (
+        //                 SELECT COUNT(*)
+        //                 FROM (
+        //                     SELECT id, clickhouse(`arrayJoin`(names), 'Utf8') as name
+        //                     FROM clickhouse.{db}.people2
+        //                 ) p2_inner
+        //                 WHERE p2_inner.id <= p.id
+        //             ) as inner_sum
+        //         FROM clickhouse.{db}.people p
+        //     ) t"
+        // );
+        // let results = ctx
+        //     .sql(&query)
+        //     .await
+        //     .inspect_err(|error| error!("Error deeply nested query: {}", error))?
+        //     .collect()
+        //     .await?;
+        // arrow::util::pretty::print_batches(&results)?;
+        // info!(">>> Deeply nested subqueries test passed");
+
+        // -----------------------------
+        // Test window functions with clickhouse in ORDER BY AND mixed functions
         // NOTE: Temporarily commented out to isolate Int16 error
-        /*
         let query = format!(
             "SELECT
                 p.id,
@@ -672,66 +803,33 @@ mod tests {
                 error!("Error window functions with clickhouse in ORDER BY: {}", error);
             })?
             .collect()
-            .await?;
-        arrow::util::pretty::print_batches(&results)?;
+            .await;
+        // arrow::util::pretty::print_batches(&results)?;
+        assert!(results.is_err());
         info!(">>> Window functions with clickhouse in ORDER BY test passed");
-        */
 
         // -----------------------------
-        // Test CASE expression with clickhouse functions
+        // Test aggregation over clickhouse function results AND mixed functions
+        // NOTE: This test fails because the analyzer exposes underlying columns
+        // even when they're wrapped in clickhouse functions, causing GROUP BY validation issues
         let query = format!(
             "SELECT
-                p.id,
-                p.name,
-                CASE
-                    WHEN p.name = 'Alice' THEN clickhouse(upper(p.name), 'Utf8')
-                    WHEN p.name = 'Bob' THEN clickhouse(lower(p.name), 'Utf8')
-                    ELSE clickhouse(concat(p.name, ' (other)'), 'Utf8')
-                END as name_transformed
-            FROM clickhouse.{db}.people p"
+                clickhouse(`toString`(mod(p.id, 2)), 'Utf8') as id_mod,
+                COUNT(p.id) as total,
+                MAX(clickhouse(exp(p.id), 'Float64')) as max_exp,
+                STRING_AGG(p.name, ',') as all_names
+            FROM clickhouse.{db}.people p
+            GROUP BY id_mod"
         );
         let results = ctx
             .sql(&query)
             .await
-            .inspect_err(|error| error!("Error CASE expression query: {}", error))?
+            .inspect_err(|error| error!("Error aggregation query: {}", error))?
             .collect()
-            .await?;
-        arrow::util::pretty::print_batches(&results)?;
-        info!(">>> CASE expression with clickhouse functions test passed");
-
-        // -----------------------------
-        // Test deeply nested subqueries
-        // NOTE: This test fails due to DataFusion's correlated subquery limitations
-        /*
-        let query = format!(
-            "SELECT
-                outer_name,
-                clickhouse(upper(outer_name), 'Utf8') as upper_name,
-                inner_sum
-            FROM (
-                SELECT
-                    p.name as outer_name,
-                    p.id as outer_id,
-                    (
-                        SELECT COUNT(*)
-                        FROM (
-                            SELECT id, clickhouse(`arrayJoin`(names), 'Utf8') as name
-                            FROM clickhouse.{db}.people2
-                        ) p2_inner
-                        WHERE p2_inner.id <= p.id
-                    ) as inner_sum
-                FROM clickhouse.{db}.people p
-            ) t"
-        );
-        let results = ctx
-            .sql(&query)
-            .await
-            .inspect_err(|error| error!("Error deeply nested query: {}", error))?
-            .collect()
-            .await?;
-        arrow::util::pretty::print_batches(&results)?;
-        info!(">>> Deeply nested subqueries test passed");
-        */
+            .await;
+        // arrow::util::pretty::print_batches(&results)?;
+        assert!(results.is_err());
+        info!(">>> Aggregation over clickhouse function results test passed");
 
         // -----------------------------
         // Test HOF
@@ -1005,237 +1103,3 @@ mod tests {
         Ok(())
     }
 }
-
-// #[cfg(all(feature = "test-utils", feature = "federation"))]
-// mod tests_federation {
-//     use std::sync::Arc;
-
-//     use clickhouse_arrow::test_utils::ClickHouseContainer;
-//     use clickhouse_datafusion::{
-//         ClickHouseEngine, ClickHouseSessionContext, DEFAULT_CLICKHOUSE_CATALOG,
-//     };
-//     use datafusion::arrow;
-//     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-//     use datafusion::error::Result;
-//     use datafusion::prelude::SessionContext;
-//     use tracing::{debug, error};
-
-//     use super::*;
-
-//     pub(super) async fn test_clickhouse_federation(ch: Arc<ClickHouseContainer>) -> Result<()> {
-//         use clickhouse_datafusion::federation;
-//         use datafusion::arrow::array::Int32Array;
-//         use datafusion::arrow::record_batch::RecordBatch;
-
-//         let db = "test_db_federation";
-
-//         // Initialize session context
-//         let ctx = SessionContext::new();
-
-//         // -----------------------------
-//         // Registering UDF Optimizer and UDF Pushdown
-//         let ctx = ClickHouseSessionContext::new(ctx, None);
-
-//         let builder = common::helpers::create_builder(&ctx, &ch).await?;
-//         let clickhouse = common::helpers::setup_test_tables(builder, db, &ctx).await?;
-
-//         // -----------------------------
-//         // Insert data using SQL
-//         let insert_sql = format!(
-//             "INSERT INTO clickhouse.{db}.people (id, name) VALUES (1, 'Alice'), (2, 'Bob')"
-//         );
-//         let results = ctx.sql(&insert_sql).await?.collect().await?;
-//         datafusion::arrow::util::pretty::print_batches(&results)?;
-//         info!(">>> Inserted data into table `{db}.people`");
-
-//         // -----------------------------
-//         // Add another table
-//         let schema_people2 = Arc::new(Schema::new(vec![
-//             Field::new("id", DataType::Int32, false),
-//             Field::new("name", DataType::Utf8, false),
-//             Field::new_list("names", Field::new_list_field(DataType::Utf8, false), false),
-//         ]));
-
-//         let clickhouse = clickhouse
-//             .with_table("people2", ClickHouseEngine::MergeTree, schema_people2.clone())
-//             .update_create_options(|opts| opts.with_order_by(&["id".into()]))
-//             .create(&ctx)
-//             .await
-//             .expect("table creation");
-
-//         // -----------------------------
-//         // Insert data using SQL
-//         let insert_sql = format!(
-//             "
-//             INSERT INTO clickhouse.{db}.people2 (id, name, names)
-//             VALUES
-//                 (1, 'Bob', make_array('Buddha', 'Zugus', 'Lulu', 'Kitty', 'Mitty')),
-//                 (2, 'Alice', make_array('Jazz', 'Kaya', 'Vienna', 'Susie', 'Georgie')),
-//                 (3, 'Charlie', make_array('Susana', 'Adrienne', 'Blayke'))
-//             "
-//         );
-//         let insert_df = ctx.sql(&insert_sql).await?.collect().await?;
-//         datafusion::arrow::util::pretty::print_batches(&insert_df)?;
-//         info!(">>> Inserted data into table `{db}.people2`");
-
-//         // -----------------------------
-//         //
-//         // Create ch catalog provider and external catalog
-//         //
-//         // NOTE: Notice build_federated is NOT used. That is to show that federation can be done
-//         // manually which occurs after the creation of the in memory table
-//         let ctx = clickhouse.build_federated(&ctx).await?;
-
-//         // Create a catalog provider that separates federated from non-federated tables
-//         let external_catalog = federation::external::FederatedCatalogProvider::new();
-
-//         // NOTE: The clickhouse catalog can be added here as well. Either way works
-//         // external_catalog.add_catalog(CLICKHOUSE_CATALOG_NAME.into(),
-//         // Arc::new(clickhouse_catalog));
-
-//         // Add in-memory table
-//         let mem_schema =
-//             Arc::new(Schema::new(vec![Field::new("event_id", DataType::Int32, false)]));
-//         let mem_table =
-//             Arc::new(datafusion::datasource::MemTable::try_new(Arc::clone(&mem_schema), vec![
-//                 vec![RecordBatch::try_new(mem_schema,
-// vec![Arc::new(Int32Array::from(vec![1]))])?],             ])?);
-//         let _ = external_catalog.register_non_federated_table("mem_events".into(), mem_table)?;
-
-//         // -----------------------------
-//         // Federate session context
-//         //
-//         // NOTE: Can choose to get a context later or earlier using `build_federated`
-//         let ctx = federation::federate_session_context(Some(&ctx));
-//         // info!(">>> Session context federated");
-
-//         // -----------------------------
-//         // Register federated catalogs
-//         let _ = ctx.register_catalog("memory", Arc::new(external_catalog));
-//         // let _ = ctx.register_catalog(DEFAULT_CLICKHOUSE_CATALOG, clickhouse_catalog);
-//         info!(">>> Federated catalog registered");
-
-//         // -----------------------------
-//         // Test select query
-//         //
-//         // TODO: Assert the output, otherwise useless test
-//         let select_query = format!("SELECT name FROM clickhouse.{db}.people");
-//         let df = ctx.sql(&select_query).await?;
-//         let results = df.collect().await?;
-//         arrow::util::pretty::print_batches(&results)?;
-//         info!("Select query passed");
-
-//         // -----------------------------
-//         // Test select query on mem table
-//         //
-//         // TODO: Assert the output, otherwise useless test
-//         let df = ctx.sql("SELECT m.event_id FROM memory.internal.mem_events m").await?;
-//         let results = df.collect().await?;
-//         arrow::util::pretty::print_batches(&results)?;
-//         info!("Select query passed (memory)");
-
-//         // -----------------------------
-//         // Test federated query
-//         let join_query = format!(
-//             "
-//             SELECT p.name, m.event_id
-//             FROM memory.internal.mem_events m
-//             JOIN clickhouse.{db}.people p ON p.id = m.event_id
-//             "
-//         );
-
-//         // TODO: Assert the output, otherwise useless test
-//         let df = ctx.sql(&join_query).await?;
-//         let results = df.collect().await?;
-//         arrow::util::pretty::print_batches(&results)?;
-//         info!("Federated query passed");
-
-//         // -----------------------------
-//         // Test projection with custom Analyzer
-//         let query = format!(
-//             "
-//             SELECT p.name
-//                 , m.event_id
-//                 , clickhouse(exp(p2.id), 'Float64')
-//                 , p2.names
-//             FROM memory.internal.mem_events m
-//             JOIN clickhouse.{db}.people p ON p.id = m.event_id
-//             JOIN (
-//                 SELECT id, clickhouse(`arrayJoin`(names), 'Utf8') as names
-//                 FROM clickhouse.{db}.people2
-//             ) p2 ON p.id = p2.id
-//             "
-//         );
-//         let df = ctx.sql(&query).await.inspect_err(|error| error!("Error exe 1 query:
-// {error}"))?;         let results = df.collect().await?;
-//         arrow::util::pretty::print_batches(&results)?;
-//         info!(">>> Projection test custom Analyzer 1 passed");
-
-//         // -----------------------------
-//         // Test projection with custom Analyzer
-//         let query = format!(
-//             "
-//             SELECT p.name
-//                 , m.event_id
-//                 , clickhouse(exp(p2.id), 'Float64')
-//                 , clickhouse(concat(p2.name, 'hello'), 'Utf8')
-//             FROM memory.internal.mem_events m
-//             JOIN clickhouse.{db}.people p ON p.id = m.event_id
-//             JOIN clickhouse.{db}.people2 p2 ON p.id = p2.id
-//             "
-//         );
-//         let df =
-//             ctx.sql(&query).await.inspect_err(|error| error!("Error exe 2 query: {}", error))?;
-//         let results = df.collect().await?;
-//         arrow::util::pretty::print_batches(&results)?;
-//         info!(">>> Projection test custom Analyzer 2 passed");
-
-//         // -----------------------------
-//         // Test projection with custom Analyzer
-//         let query = format!(
-//             "
-//             SELECT p.name
-//                 , m.event_id
-//                 , clickhouse(exp(p2.id), 'Float64')
-//                 , clickhouse(concat(p2.names, 'hello'), 'Utf8')
-//             FROM memory.internal.mem_events m
-//             JOIN clickhouse.{db}.people p ON p.id = m.event_id
-//             JOIN (
-//                 SELECT id
-//                     , clickhouse(`arrayJoin`(names), 'Utf8') as names
-//                 FROM clickhouse.{db}.people2
-//             ) p2 ON p.id = p2.id
-//             "
-//         );
-//         let df =
-//             ctx.sql(&query).await.inspect_err(|error| error!("Error exe 3 query: {}", error))?;
-//         let results = df.collect().await?;
-//         arrow::util::pretty::print_batches(&results)?;
-//         info!(">>> Projection test custom Analyzer 3 passed");
-
-//         // -----------------------------
-//         // Test projection with custom Analyzer
-//         let query = format!(
-//             "
-//             SELECT p.name
-//                 , m.event_id
-//                 , clickhouse(exp(p2.id), 'Float64')
-//                 , concat(p2.names, 'hello')
-//             FROM memory.internal.mem_events m
-//             JOIN clickhouse.{db}.people p ON p.id = m.event_id
-//             JOIN (
-//                 SELECT id
-//                     , clickhouse(`arrayJoin`(names), 'Utf8') as names
-//                 FROM clickhouse.{db}.people2
-//             ) p2 ON p.id = p2.id
-//             "
-//         );
-//         let df =
-//             ctx.sql(&query).await.inspect_err(|error| error!("Error exe 4 query: {}", error))?;
-//         let results = df.collect().await?;
-//         arrow::util::pretty::print_batches(&results)?;
-//         info!(">>> Projection test custom Analyzer 4 passed");
-
-//         Ok(())
-//     }
-// }

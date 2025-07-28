@@ -18,7 +18,7 @@ use crate::udfs::simple::CLICKHOUSE_FUNC_ALIASES;
 pub struct ClickHouseDialect;
 
 impl UnparserDialect for ClickHouseDialect {
-    fn identifier_quote_style(&self, _: &str) -> Option<char> { Some('"') }
+    fn identifier_quote_style(&self, _: &str) -> Option<char> { Some('`') }
 
     fn scalar_function_to_sql_overrides(
         &self,

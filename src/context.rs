@@ -34,10 +34,10 @@ use datafusion::sql::planner::{ContextProvider, ParserOptions, SqlToRel};
 use datafusion::sql::{ResolvedTableReference, TableReference};
 use datafusion::variable::VarType;
 
+use crate::udfs::analyzer::ClickHouseFunctionPushdown;
 use crate::udfs::placeholder::PlaceholderUDF;
 use crate::udfs::planner::ClickHouseExtensionPlanner;
 use crate::udfs::pushdown::{CLICKHOUSE_UDF_ALIASES, clickhouse_udf_pushdown_udf};
-use crate::udfs::pushdown_analyzer::ClickHouseFunctionPushdown;
 
 // TODO: Remove - docs
 // Convenience method for preparing a session context both with federation if the feature is enabled
@@ -66,9 +66,8 @@ pub fn prepare_session_context(
         ctx.into_state_builder()
     } else {
         let mut analyzer_rules = state.analyzer().rules.clone();
-        analyzer_rules.push(
-            Arc::new(ClickHouseFunctionPushdown::new()) as Arc<dyn AnalyzerRule + Send + Sync>
-        );
+        analyzer_rules
+            .push(Arc::new(ClickHouseFunctionPushdown) as Arc<dyn AnalyzerRule + Send + Sync>);
         ctx.into_state_builder().with_analyzer_rules(analyzer_rules)
     };
     // Finally, build the context again passing the ClickHouseQueryPlanner
@@ -238,9 +237,9 @@ impl ClickHouseSessionContext {
             enable_options_value_normalization: sql_parser_options
                 .enable_options_value_normalization,
             support_varchar_with_length:        sql_parser_options.support_varchar_with_length,
-            // map_varchar_to_utf8view:            sql_parser_options.map_varchar_to_utf8view,
-            // TODO: Remove
             map_varchar_to_utf8view:            sql_parser_options.map_varchar_to_utf8view,
+            // TODO: Remove
+            // map_string_types_to_utf8view:       sql_parser_options.map_string_types_to_utf8view,
             collect_spans:                      sql_parser_options.collect_spans,
         }
     }

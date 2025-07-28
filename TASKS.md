@@ -42,16 +42,32 @@
 6. `test_filter_with_exp_function` - Algorithm works, wrapper optimized away
 7. `test_aggregate_blocks_pushdown` - Algorithm works, wrapper optimized away
 
-## 🎉 PHASE 1 COMPLETE - MASSIVE SUCCESS!
+## 🎉 PHASE 2 COMPLETE - ClickHouse UDF Integration Success!
 
-### ✅ Extension Node Implementation - DONE!
-- ✅ Implemented `ClickHouseFunctionNode` with proper `UserDefinedLogicalNodeCore`
-- ✅ Updated `add_functions_to_plan()` to use Extension node instead of projection  
-- ✅ Extension node persists through DataFusion optimization perfectly
-- ✅ All required traits implemented (PartialEq, Eq, Hash, PartialOrd, Ord)
+### ✅ Architectural Refactoring - MASSIVE IMPROVEMENTS!
+- ✅ **PushdownState Enhancement**: Added pre-computed `functions_resolved` to eliminate ResolvedSource recomputation
+- ✅ **Clean Return Type**: Changed to `Result<Transformed<LogicalPlan>>` following DataFusion patterns
+- ✅ **Alias Support**: Added crucial `Expr::Alias(inner)` handling in function detection
+- ✅ **Function Source Separation**: Wrapping function receives ONLY pushed-down functions, not extracted ones
+- ✅ **Performance Optimization**: Incremental ResolvedSource updates instead of full recomputation
+- ✅ **Consistent Branch Patterns**: All plan branches follow similar structure for future optimization
 
-### ✅ Test Results - 7/8 PASSING!
-- ✅ `test_simple_projection_with_exp_function` - Extension at root level
+### ✅ ClickHouse UDF Integration - COMPLETE!
+- ✅ **Function Detection**: Recognizes all `CLICKHOUSE_UDF_ALIASES` (`clickhouse`, `clickhouse_udf`, etc.)
+- ✅ **Signature Parsing**: Extracts `(inner_function, 'DataType')` from `clickhouse()` calls
+- ✅ **Extension Node Storage**: Stores ONLY inner functions for ClickHouse unparsing
+- ✅ **Context Setup**: Registered `ClickHousePushdownUDF` in test context
+- ✅ **Test Migration**: Updated all tests from `exp()` to `clickhouse(exp(), 'Float64')` syntax
+
+### ✅ Test Results - 5/8 PASSING!
+- ✅ `test_simple_projection_with_clickhouse_function` - Extension at root level
+- ✅ `test_multiple_clickhouse_functions_same_table` - Multiple functions handled
+- ✅ `test_no_functions_no_wrapping` - Baseline case works  
+- ✅ `test_join_function_routing` - Functions correctly routed to join sides
+- ✅ `test_join_with_subqueries_expected_to_fail` - Still works correctly
+- ❌ `test_filter_with_clickhouse_function` - Recursion state propagation issue
+- ❌ `test_aggregate_blocks_pushdown` - Recursion state propagation issue  
+- ❌ `test_disjoint_tables_expected_to_fail` - Function lost during JOIN recursion
 - ✅ `test_filter_with_exp_function` - Extension at filter level (WAS FAILING, NOW FIXED!)  
 - ✅ `test_aggregate_blocks_pushdown` - Extension respects aggregate boundary (WAS FAILING, NOW FIXED!)
 - ✅ `test_multiple_exp_functions_same_table` - Multiple functions handled
@@ -68,14 +84,31 @@
 - ✅ Aggregate blocking - functions never cross aggregate boundaries
 - ✅ Extension nodes survive DataFusion's optimization passes
 
-## 🚀 NEXT: Phase 2 - ClickHouse UDF Integration
+## 🚀 NEXT: Phase 3 - Plan Integrity & Schema Alignment
 
-### Key Technical Requirements for Phase 2:
-1. **Update function detection**: Look for `clickhouse()` UDF calls instead of `exp()`
-2. **Parse UDF arguments**: Extract inner function and DataType from `clickhouse(inner_func, 'DataType')`
-3. **Context bootstrap**: Integrate `ClickHousePushdownUDF` and custom ContextProvider  
-4. **Schema generation**: Use DataType from second argument for Extension node schema
-5. **Store inner functions**: Extension node stores only inner function for unparsing
+### 🚨 Current Critical Issue: Schema Misalignment
+- **Plan Verification Added**: `SqlOptions::default().verify_plan(&analyzed_plan)?` added to all tests
+- **Expected Result**: ALL tests will likely fail until wrapping function fixes schema alignment
+- **Root Cause**: Extension node input plan still contains `clickhouse()` wrappers that create schema mismatches
+
+### Key Technical Requirements for Phase 3:
+1. **Recursive Function Unwrapping**: Walk ALL expressions in the wrapped plan and unwrap `clickhouse()` calls
+2. **Schema Recomputation**: Update DFSchema for each plan level after function removal  
+3. **Expression Replacement**: Replace `clickhouse(inner, 'Type')` with appropriate aliases/columns
+4. **Schema Alignment**: Ensure Extension node schema matches input plan schema after unwrapping
+5. **DataType Integration**: Use extracted DataType for proper schema generation
+
+### 🚨 CRITICAL DISCOVERY: Refactoring Broke Function Propagation!
+**Plan Verification Success**: Schema alignment is actually working - verification passes for working tests!
+**Real Issue**: Architectural refactoring introduced recursion state bug
+
+**Recursion State Propagation Issue** (3 failing tests):
+- Functions extracted at projection level but `pending_functions: 0` at JOIN level  
+- Debug shows: `📥 Pending functions: 0` but `📥 Functions resolved: Exact { table: "table2" }`
+- Algorithm correctly identifies disjoint tables but function gets lost during recursion
+- **Root Cause**: Refactoring changed how `PushdownState` carries functions through recursion
+
+**PRIORITY**: Fix recursion state propagation BEFORE addressing wrapping function schema issues
 
 ### Context Setup Details (from PUSHDOWN.md):
 - Custom ContextProvider with PlaceholderUDF mechanism

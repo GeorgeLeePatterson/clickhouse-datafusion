@@ -72,7 +72,7 @@ Extending DataFusion with Clickhouse support using `clickhouse-arrow`.
 > Enabling the "federation" feature (enabled by default) allows querying, joining, DML, and DDL
 > across multiple ClickHouse instances as well as joining to non-ClickHouse data sources.
 
-```
+```ignore
     Finished `test` profile [unoptimized + debuginfo] target(s) in 5.50s
      Running tests/e2e.rs (target/debug/deps/e2e-e54d51850db8e90b)
 

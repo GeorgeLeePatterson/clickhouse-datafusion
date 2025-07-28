@@ -6,14 +6,19 @@ use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::sink::DataSinkExec;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::sql::TableReference;
+use futures_util::TryStreamExt as _;
 
 use crate::connection::ClickHouseConnectionPool;
 use crate::sink::ClickHouseDataSink;
-use crate::sql::SqlTable;
+use crate::sql::{JoinPushDown, SqlTable};
+
+pub const CLICKHOUSE_TABLE_PROVIDER_NAME: &str = "ClickHouseTableProvider";
 
 // TODO: Docs
 //
@@ -35,7 +40,7 @@ impl ClickHouseTableProvider {
     /// - Returns an error if the `SQLTable` creation fails.
     pub async fn try_new(pool: ClickHouseConnectionPool, table: TableReference) -> Result<Self> {
         let writer = pool.clone();
-        let inner = SqlTable::new("clickhouse", pool, table.clone()).await?;
+        let inner = SqlTable::new(CLICKHOUSE_TABLE_PROVIDER_NAME, pool, table.clone()).await?;
         Ok(Self { reader: inner, table, writer, exprs: None })
     }
 
@@ -46,7 +51,8 @@ impl ClickHouseTableProvider {
         schema: SchemaRef,
     ) -> Self {
         let writer = pool.clone();
-        let inner = SqlTable::new_with_schema("clickhouse", pool, schema, table.clone());
+        let inner =
+            SqlTable::new_with_schema(CLICKHOUSE_TABLE_PROVIDER_NAME, pool, schema, table.clone());
         Self { reader: inner, table, writer, exprs: None }
     }
 
@@ -58,12 +64,46 @@ impl ClickHouseTableProvider {
         exprs: Vec<Expr>,
     ) -> Self {
         let writer = pool.clone();
-        let inner = SqlTable::new_with_schema("clickhouse", pool, schema, table.clone())
-            .with_exprs(exprs.clone());
+        let inner =
+            SqlTable::new_with_schema(CLICKHOUSE_TABLE_PROVIDER_NAME, pool, schema, table.clone())
+                .with_exprs(exprs.clone());
         Self { reader: inner, table, writer, exprs: Some(exprs) }
     }
 
     pub fn writer(&self) -> &ClickHouseConnectionPool { &self.writer }
+
+    /// Executes a SQL query and returns a stream of record batches.
+    ///
+    /// This method is exposed so that federation is not required to run sql using this table
+    /// provider.
+    ///
+    /// # Errors
+    /// - Returns an error if the connection pool fails to connect.
+    /// - Returns an error if the query execution fails.
+    pub fn execute_sql(&self, query: &str, schema: SchemaRef) -> Result<SendableRecordBatchStream> {
+        let pool = self.writer.clone();
+        let query = query.to_string();
+        let exec_schema = Arc::clone(&schema);
+        let stream = futures_util::stream::once(async move {
+            pool.connect().await?.query_arrow(&query, &[], Some(exec_schema)).await
+        })
+        .try_flatten();
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+    }
+
+    /// Provide the unique context for this table provider.
+    ///
+    /// This method is provided publicly to allow access to whether this provider accesses the same
+    /// underlying `ClickHouse` server as another, without relying on federation.
+    pub fn unique_context(&self) -> String {
+        match self.reader.pool.join_push_down() {
+            JoinPushDown::AllowedFor(context) => context,
+            // Don't return None here - it will cause incorrect federation with other providers of
+            // the same name that also have a compute_context of None. Instead return a
+            // random string that will never match any other provider's context.
+            JoinPushDown::Disallow => format!("{}", self.reader.unique_id()),
+        }
+    }
 }
 
 #[async_trait]
