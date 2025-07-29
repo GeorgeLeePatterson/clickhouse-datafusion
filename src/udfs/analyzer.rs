@@ -8,7 +8,7 @@ use datafusion::common::{Column, DFSchema, Result, plan_err};
 #[cfg(not(feature = "federation"))]
 use datafusion::logical_expr::Extension;
 use datafusion::logical_expr::{
-    Aggregate, Filter, Join, Limit, LogicalPlan, Projection, SubqueryAlias, Union,
+    Aggregate, Distinct, Filter, Join, Limit, LogicalPlan, Projection, SubqueryAlias, Union,
 };
 use datafusion::optimizer::AnalyzerRule;
 use datafusion::prelude::Expr;
@@ -100,6 +100,33 @@ fn analyze_and_transform_plan(
     // Then check any plan violations for plan functions
     let plan_violations = check_plan_for_violations(&plan);
 
+    // Possible exit early for passthrough plans
+    if matches!(
+        plan,
+        LogicalPlan::Union(_)
+            | LogicalPlan::RecursiveQuery(_)
+            | LogicalPlan::Subquery(_)
+            | LogicalPlan::SubqueryAlias(_)
+            | LogicalPlan::Analyze(_)
+            | LogicalPlan::Explain(_)
+            | LogicalPlan::Distinct(Distinct::All(_))
+            | LogicalPlan::Dml(_)
+            | LogicalPlan::Ddl(_)
+            | LogicalPlan::Copy(_)
+            | LogicalPlan::DescribeTable(_)
+    ) && handle_passthrough_plan(
+        &plan,
+        &mut state,
+        lineage_visitor,
+        &function_violations,
+        &plan_violations,
+    )? {
+        let wrapped_plan = wrap_plan_with_functions(plan, state)?;
+        return Ok(Transformed::yes(wrapped_plan));
+    }
+
+    let mut has_clickhouse_functions = !state.functions.is_empty();
+
     match plan {
         // Extract ClickHouse functions from projections
         //
@@ -148,12 +175,14 @@ fn analyze_and_transform_plan(
                 && find_clickhouse_function(f)
             {
                 state.resolved = state.resolved.merge(lineage_visitor.resolve_expr(f));
+                has_clickhouse_functions |= true;
             }
 
             if let Some(ref s) = skip
                 && find_clickhouse_function(s)
             {
                 state.resolved = state.resolved.merge(lineage_visitor.resolve_expr(s));
+                has_clickhouse_functions |= true;
             }
 
             // Generate the ResolvedSource for the input's expressions
@@ -170,19 +199,21 @@ fn analyze_and_transform_plan(
                 }
             }
 
-            // Ensure no semantic violations in the result of pushdown
-            semantic_err(
-                "Limit",
-                "SQL unsupported, pushed functions violate sql semantics in plan.",
-                function_violations,
-            )?;
+            if has_clickhouse_functions {
+                // Ensure no semantic violations in the result of pushdown
+                semantic_err(
+                    "Limit",
+                    "SQL unsupported, pushed functions violate sql semantics in plan.",
+                    &function_violations,
+                )?;
 
-            // Ensure no plan violations in the result of pushdown
-            semantic_err(
-                "Limit",
-                "SQL unsupported, plan violates sql semantics in expressions.",
-                plan_violations,
-            )?;
+                // Ensure no plan violations in the result of pushdown
+                semantic_err(
+                    "Limit",
+                    "SQL unsupported, plan violates sql semantics in expressions.",
+                    &plan_violations,
+                )?;
+            }
 
             let new_fetch = if let Some(f) = fetch {
                 Some(collect_and_transform_function(*f, lineage_visitor, &mut state)?.data)
@@ -216,6 +247,7 @@ fn analyze_and_transform_plan(
         LogicalPlan::Filter(Filter { predicate, input, .. }) => {
             if find_clickhouse_function(&predicate) {
                 state.resolved = state.resolved.merge(lineage_visitor.resolve_expr(&predicate));
+                has_clickhouse_functions |= true;
             }
 
             // Generate the ResolvedSource for the input's expressions
@@ -232,19 +264,21 @@ fn analyze_and_transform_plan(
                 }
             }
 
-            // Ensure no semantic violations in the result of pushdown
-            semantic_err(
-                "Filter",
-                "SQL unsupported, pushed functions violate sql semantics in filter plan.",
-                function_violations,
-            )?;
+            if has_clickhouse_functions {
+                // Ensure no semantic violations in the result of pushdown
+                semantic_err(
+                    "Filter",
+                    "SQL unsupported, pushed functions violate sql semantics in filter plan.",
+                    &function_violations,
+                )?;
 
-            // Ensure no plan violations in the result of pushdown
-            semantic_err(
-                "Filter",
-                "SQL unsupported, filter plan violates sql semantics in filter expressions.",
-                plan_violations,
-            )?;
+                // Ensure no plan violations in the result of pushdown
+                semantic_err(
+                    "Filter",
+                    "SQL unsupported, filter plan violates sql semantics in filter expressions.",
+                    &plan_violations,
+                )?;
+            }
 
             // Add extracted functions to pending functions for recursion ONLY when we recurse
             let new_predicate =
@@ -265,15 +299,24 @@ fn analyze_and_transform_plan(
 
         // Aggregates block functions from crossing boundaries but can inspect their inputs
         LogicalPlan::Aggregate(agg) => {
-            state.resolved =
-                state
-                    .resolved
-                    .merge(lineage_visitor.resolve_exprs(
-                        agg.group_expr.iter().filter(|e| find_clickhouse_function(e)),
-                    ))
-                    .merge(lineage_visitor.resolve_exprs(
-                        agg.aggr_expr.iter().filter(|e| find_clickhouse_function(e)),
-                    ));
+            state.resolved = state
+                .resolved
+                .merge(
+                    lineage_visitor.resolve_exprs(
+                        agg.group_expr
+                            .iter()
+                            .filter(|e| find_clickhouse_function(e))
+                            .inspect(|_| has_clickhouse_functions |= true),
+                    ),
+                )
+                .merge(
+                    lineage_visitor.resolve_exprs(
+                        agg.aggr_expr
+                            .iter()
+                            .filter(|e| find_clickhouse_function(e))
+                            .inspect(|_| has_clickhouse_functions |= true),
+                    ),
+                );
 
             // If pending functions pushed, attempt to wrap the aggregate
             if state.resolved.is_known() {
@@ -291,25 +334,24 @@ fn analyze_and_transform_plan(
                 }
             }
 
-            // Ensure no semantic violations in the result of pushdown
-            semantic_err(
-                "Aggregate",
-                "SQL unsupported, pushed functions violate sql semantics in aggregate plan.",
-                function_violations,
-            )?;
+            if has_clickhouse_functions {
+                // Ensure no semantic violations in the result of pushdown
+                semantic_err(
+                    "Aggregate",
+                    "SQL unsupported, pushed functions violate sql semantics in aggregate plan.",
+                    &function_violations,
+                )?;
 
-            // Ensure no plan violations in the result of pushdown
-            semantic_err(
-                "Aggregate",
-                "SQL unsupported, aggregate plan violates sql semantics in aggregate expressions.",
-                plan_violations,
-            )?;
+                // Ensure no plan violations in the result of pushdown
+                semantic_err(
+                    "Aggregate",
+                    "SQL unsupported, aggregate plan violates sql semantics in aggregate \
+                     expressions.",
+                    &plan_violations,
+                )?;
+            }
 
             // Collect aggregate expressions
-            let schema_change_needed = agg.aggr_expr.iter().any(find_clickhouse_function)
-                || agg.group_expr.iter().any(find_clickhouse_function)
-                || !state.functions.is_empty();
-
             let aliased_aggr =
                 collect_and_transform_exprs(agg.aggr_expr, lineage_visitor, &mut state)?;
             let aliased_group =
@@ -322,7 +364,7 @@ fn analyze_and_transform_plan(
                 state,
             )?;
 
-            let was_transformed = new_input.transformed || schema_change_needed;
+            let was_transformed = new_input.transformed || has_clickhouse_functions;
 
             let new_plan = LogicalPlan::Aggregate(Aggregate::try_new(
                 Arc::new(new_input.data),
@@ -363,8 +405,10 @@ fn analyze_and_transform_plan(
 
                 // Since the join filter applies to left & right schemas it must be collected first.
                 if let Some(f) = join_filter {
-                    join_filter =
-                        Some(collect_and_transform_function(f, lineage_visitor, &mut state)?.data);
+                    let new_filter =
+                        collect_and_transform_function(f, lineage_visitor, &mut state)?;
+                    has_clickhouse_functions |= new_filter.transformed;
+                    join_filter = Some(new_filter.data);
                 }
 
                 let mut left_resolved = ResolvedSource::Unknown;
@@ -411,19 +455,21 @@ fn analyze_and_transform_plan(
                     PushdownState { resolved: right_resolved, functions: right_functions };
             }
 
-            // Ensure no semantic violations in the result of pushdown
-            semantic_err(
-                "Join",
-                "SQL unsupported, pushed functions violate sql semantics in join plan.",
-                function_violations,
-            )?;
+            if has_clickhouse_functions {
+                // Ensure no semantic violations in the result of pushdown
+                semantic_err(
+                    "Join",
+                    "SQL unsupported, pushed functions violate sql semantics in join plan.",
+                    &function_violations,
+                )?;
 
-            // Ensure no plan violations in the result of pushdown
-            semantic_err(
-                "Join",
-                "SQL unsupported, join plan violates sql semantics in join expressions.",
-                plan_violations,
-            )?;
+                // Ensure no plan violations in the result of pushdown
+                semantic_err(
+                    "Join",
+                    "SQL unsupported, join plan violates sql semantics in join expressions.",
+                    &plan_violations,
+                )?;
+            }
 
             let new_on = join
                 .on
@@ -466,7 +512,7 @@ fn analyze_and_transform_plan(
                 join_filter,
                 join.join_type,
                 join.join_constraint,
-                join.null_equals_null,
+                join.null_equality,
             )?;
             if was_transformed {
                 Ok(Transformed::yes(LogicalPlan::Join(new_join)))
@@ -477,35 +523,6 @@ fn analyze_and_transform_plan(
 
         // Unions handled specially, can entire union can be wrapped since inputs are homogenous?
         LogicalPlan::Union(union) => {
-            // Handle case where no functions found yet (since Union tends to be top level)
-            if state.functions.is_empty() {
-                let mut functions_resolved = ResolvedSource::default();
-
-                for input in &union.inputs {
-                    let _ = input
-                        .apply_expressions(|expr| {
-                            use_clickhouse_function_context(expr, |e| {
-                                functions_resolved = std::mem::take(&mut functions_resolved)
-                                    .merge(lineage_visitor.resolve_expr(e));
-                                Ok(TreeNodeRecursion::Stop)
-                            })
-                            .unwrap();
-                            Ok(TreeNodeRecursion::Continue)
-                        })
-                        .unwrap();
-                }
-
-                // If the column references are resolved, attempt to wrap
-                if functions_resolved.is_known() {
-                    let union_resolved = lineage_visitor.resolve_schema(&union.schema);
-                    if functions_resolved.resolves_eq(&union_resolved) {
-                        let union_plan = LogicalPlan::Union(union);
-                        let wrapped_plan = wrap_plan_with_functions(union_plan, state)?;
-                        return Ok(Transformed::yes(wrapped_plan));
-                    }
-                }
-            }
-
             let mut was_transformed = false;
             let new_inputs = union
                 .inputs
@@ -541,8 +558,12 @@ fn analyze_and_transform_plan(
 
             // Update the ResolvedSource of the state with any new clickhouse functions
             state.resolved = state.resolved.merge(
-                lineage_visitor
-                    .resolve_exprs(expressions.iter().filter(|e| find_clickhouse_function(e))),
+                lineage_visitor.resolve_exprs(
+                    expressions
+                        .iter()
+                        .filter(|e| find_clickhouse_function(e))
+                        .inspect(|_| has_clickhouse_functions |= true),
+                ),
             );
 
             // If the column references are resolved, attempt to wrap
@@ -554,22 +575,21 @@ fn analyze_and_transform_plan(
                 }
             }
 
-            // Ensure no semantic violations in the result of pushdown
-            semantic_err(
-                plan.display(),
-                "SQL unsupported, pushed functions violate sql semantics in current plan.",
-                function_violations,
-            )?;
+            if has_clickhouse_functions {
+                // Ensure no semantic violations in the result of pushdown
+                semantic_err(
+                    plan.display(),
+                    "SQL unsupported, pushed functions violate sql semantics in current plan.",
+                    &function_violations,
+                )?;
 
-            // Ensure no plan violations in the result of pushdown
-            semantic_err(
-                plan.display(),
-                "SQL unsupported, plan violates sql semantics in plan's expressions.",
-                plan_violations,
-            )?;
-
-            let schema_change_needed =
-                expressions.iter().any(find_clickhouse_function) || !state.functions.is_empty();
+                // Ensure no plan violations in the result of pushdown
+                semantic_err(
+                    plan.display(),
+                    "SQL unsupported, plan violates sql semantics in plan's expressions.",
+                    &plan_violations,
+                )?;
+            }
 
             // Update w/ schema and expression changes
             let aliased_exprs =
@@ -581,7 +601,7 @@ fn analyze_and_transform_plan(
 
             for input in inputs {
                 let new_input = handle_input_plan(input.clone(), &mut state, lineage_visitor)?;
-                was_transformed = was_transformed || new_input.transformed;
+                was_transformed |= new_input.transformed;
                 new_inputs.push(new_input.data);
             }
 
@@ -596,7 +616,7 @@ fn analyze_and_transform_plan(
             // Costly, try and match individual LogicalPlans above when possible
             let new_plan = plan.with_new_exprs(aliased_exprs, new_inputs)?;
 
-            if was_transformed || schema_change_needed {
+            if was_transformed || has_clickhouse_functions {
                 Ok(Transformed::yes(new_plan))
             } else {
                 Ok(Transformed::no(new_plan))
@@ -606,6 +626,57 @@ fn analyze_and_transform_plan(
 }
 
 type QualifiedField = (Option<TableReference>, Arc<Field>);
+
+// Handle case where no functions found yet, ie Union tends to be top level
+fn handle_passthrough_plan(
+    plan: &LogicalPlan,
+    state: &mut PushdownState,
+    visitor: &SourceLineageVistor,
+    function_violations: &HashSet<Column>,
+    plan_violations: &HashSet<Column>,
+) -> Result<bool> {
+    if state.functions.is_empty() {
+        let mut functions_resolved = ResolvedSource::default();
+
+        for input in plan.inputs() {
+            let _ = input
+                .apply_expressions(|expr| {
+                    use_clickhouse_function_context(expr, |e| {
+                        functions_resolved =
+                            std::mem::take(&mut functions_resolved).merge(visitor.resolve_expr(e));
+                        Ok(TreeNodeRecursion::Stop)
+                    })
+                    .unwrap();
+                    Ok(TreeNodeRecursion::Continue)
+                })
+                .unwrap();
+        }
+
+        // If the column references are resolved, attempt to wrap
+        if functions_resolved.is_known() {
+            let union_resolved = visitor.resolve_schema(plan.schema());
+            if functions_resolved.resolves_eq(&union_resolved) {
+                return Ok(true);
+            }
+        }
+    }
+
+    // Ensure no semantic violations in the result of pushdown
+    semantic_err(
+        "Filter",
+        "SQL unsupported, pushed functions violate sql semantics in filter plan.",
+        function_violations,
+    )?;
+
+    // Ensure no plan violations in the result of pushdown
+    semantic_err(
+        "Filter",
+        "SQL unsupported, filter plan violates sql semantics in filter expressions.",
+        plan_violations,
+    )?;
+
+    Ok(false)
+}
 
 /// Helper function to generically handle a plan's input plan
 fn handle_input_plan(
@@ -891,11 +962,11 @@ fn check_function_against_exprs<'a>(
 fn semantic_err(
     name: impl std::fmt::Display,
     msg: &str,
-    violations: HashSet<Column>,
+    violations: &HashSet<Column>,
 ) -> Result<()> {
     if !violations.is_empty() {
         let violations =
-            violations.into_iter().map(|c| c.quoted_flat_name()).collect::<Vec<_>>().join(", ");
+            violations.iter().map(Column::quoted_flat_name).collect::<Vec<_>>().join(", ");
         return plan_err!("[{name}] - {msg} Violations: {violations}");
     }
     Ok(())

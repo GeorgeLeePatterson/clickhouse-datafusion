@@ -3,7 +3,9 @@ use std::sync::Arc;
 use clickhouse_arrow::prelude::ClickHouseEngine;
 use clickhouse_arrow::test_utils::ClickHouseContainer;
 use clickhouse_arrow::{CompressionMethod, CreateOptions};
-use clickhouse_datafusion::{ClickHouseBuilder, ClickHouseCatalogBuilder, default_arrow_options};
+use clickhouse_datafusion::{
+    ClickHouseBuilder, ClickHouseCatalogBuilder, DEFAULT_CLICKHOUSE_CATALOG, default_arrow_options,
+};
 use datafusion::arrow::array::AsArray;
 use datafusion::arrow::compute::kernels::cast;
 use datafusion::arrow::datatypes::{DataType, Field, Int32Type, Schema};
@@ -25,7 +27,7 @@ pub(crate) async fn create_builder(
                 .with_compression(CompressionMethod::LZ4)
                 .with_arrow_options(default_arrow_options())
         })
-        .build_catalog(ctx, None)
+        .build_catalog(ctx, Some(DEFAULT_CLICKHOUSE_CATALOG))
         .await
 }
 

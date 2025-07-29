@@ -430,3 +430,325 @@ pub(crate) fn default_str_to_expr(value: &str) -> Expr {
         s => lit(s),
     }
 }
+
+#[cfg(all(test, feature = "test-utils"))]
+mod tests {
+    use std::collections::HashMap;
+
+    use clickhouse_arrow::{ArrowConnectionPoolBuilder, CompressionMethod, Destination};
+
+    use super::*;
+
+    #[test]
+    fn test_parse_param_hashmap_basic() {
+        let result = parse_param_hashmap("key1=value1,key2=value2");
+        let mut expected = HashMap::new();
+        drop(expected.insert("key1".to_string(), "value1".to_string()));
+        drop(expected.insert("key2".to_string(), "value2".to_string()));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_param_hashmap_empty() {
+        let result = parse_param_hashmap("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_param_hashmap_single_pair() {
+        let result = parse_param_hashmap("single=value");
+        let mut expected = HashMap::new();
+        drop(expected.insert("single".to_string(), "value".to_string()));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_param_hashmap_malformed() {
+        // Test with malformed entries (no equals sign)
+        let result = parse_param_hashmap("key1=value1,malformed,key2=value2");
+        let mut expected = HashMap::new();
+        drop(expected.insert("key1".to_string(), "value1".to_string()));
+        drop(expected.insert("key2".to_string(), "value2".to_string()));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_param_hashmap_empty_values() {
+        let result = parse_param_hashmap("key1=,key2=value2");
+        let mut expected = HashMap::new();
+        drop(expected.insert("key1".to_string(), String::new()));
+        drop(expected.insert("key2".to_string(), "value2".to_string()));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_pool_builder_to_params_basic() {
+        let destination = Destination::from("http://localhost:8123");
+        let builder = ArrowConnectionPoolBuilder::new(destination)
+            .configure_client(|c| c.with_username("test_user").with_database("test_db"));
+
+        let result = pool_builder_to_params("http://localhost:8123", &builder);
+        assert!(result.is_ok());
+
+        let params = result.unwrap();
+        assert_eq!(params.get(ENDPOINT_PARAM).unwrap().to_string(), "http://localhost:8123");
+        assert_eq!(params.get(USERNAME_PARAM).unwrap().to_string(), "test_user");
+        assert_eq!(params.get(DEFAULT_DATABASE_PARAM).unwrap().to_string(), "test_db");
+    }
+
+    #[test]
+    fn test_pool_builder_to_params_with_password() {
+        let destination = Destination::from("http://localhost:8123");
+        let builder = ArrowConnectionPoolBuilder::new(destination).configure_client(|c| {
+            c.with_username("test_user")
+                .with_password(Secret::new("secret_password"))
+                .with_database("test_db")
+        });
+
+        let result = pool_builder_to_params("http://localhost:8123", &builder);
+        assert!(result.is_ok());
+
+        let params = result.unwrap();
+        assert_eq!(params.get(PASSWORD_PARAM).unwrap().to_string(), "secret_password");
+    }
+
+    #[test]
+    fn test_pool_builder_to_params_with_compression() {
+        let destination = Destination::from("http://localhost:8123");
+        let builder = ArrowConnectionPoolBuilder::new(destination).configure_client(|c| {
+            c.with_username("test_user").with_compression(CompressionMethod::LZ4)
+        });
+
+        let result = pool_builder_to_params("http://localhost:8123", &builder);
+        assert!(result.is_ok());
+
+        let params = result.unwrap();
+        assert_eq!(
+            params.get(COMPRESSION_PARAM).unwrap().to_string(),
+            format!("{}", CompressionMethod::LZ4)
+        );
+    }
+
+    #[test]
+    fn test_pool_builder_to_params_with_tls() {
+        let destination = Destination::from("https://localhost:8443");
+        let builder =
+            ArrowConnectionPoolBuilder::new(destination).configure_client(|c| c.with_tls(true));
+
+        let result = pool_builder_to_params("https://localhost:8443", &builder);
+        assert!(result.is_ok());
+
+        let params = result.unwrap();
+        assert_eq!(params.get(USE_TLS_PARAM).unwrap().to_string(), "true");
+    }
+
+    #[test]
+    fn test_pool_builder_to_params_with_domain() {
+        let destination = Destination::from("http://localhost:8123");
+        let builder = ArrowConnectionPoolBuilder::new(destination)
+            .configure_client(|c| c.with_domain("test.domain.com"));
+
+        let result = pool_builder_to_params("http://localhost:8123", &builder);
+        assert!(result.is_ok());
+
+        let params = result.unwrap();
+        assert_eq!(params.get(DOMAIN_PARAM).unwrap().to_string(), "test.domain.com");
+    }
+
+    #[test]
+    fn test_params_to_pool_builder_basic() {
+        let mut params = HashMap::new();
+        drop(params.insert(USERNAME_PARAM.to_string(), "test_user".to_string()));
+        drop(params.insert(PASSWORD_PARAM.to_string(), "test_password".to_string()));
+        drop(params.insert(DEFAULT_DATABASE_PARAM.to_string(), "test_db".to_string()));
+
+        let destination = Destination::from("http://localhost:8123");
+        let result = params_to_pool_builder(destination, &mut params, false);
+        assert!(result.is_ok());
+
+        let builder = result.unwrap();
+        assert_eq!(builder.client_options().username, "test_user");
+        assert_eq!(builder.client_options().password.get(), "test_password");
+        // Note: default_database is always set to "default" regardless of input
+        assert_eq!(builder.client_options().default_database, "default");
+    }
+
+    #[test]
+    fn test_params_to_pool_builder_with_defaults() {
+        let mut params = HashMap::new();
+        // Don't provide username/password to test defaults
+
+        let destination = Destination::from("http://localhost:8123");
+        let result = params_to_pool_builder(destination, &mut params, false);
+        assert!(result.is_ok());
+
+        let builder = result.unwrap();
+        assert_eq!(builder.client_options().username, "default");
+        assert_eq!(builder.client_options().password.get(), "");
+        assert_eq!(builder.client_options().default_database, "default");
+    }
+
+    #[test]
+    fn test_params_to_pool_builder_with_compression() {
+        let mut params = HashMap::new();
+        drop(params.insert(COMPRESSION_PARAM.to_string(), "lz4".to_string()));
+
+        let destination = Destination::from("http://localhost:8123");
+        let result = params_to_pool_builder(destination, &mut params, false);
+        assert!(result.is_ok());
+
+        let builder = result.unwrap();
+        assert_eq!(builder.client_options().compression, CompressionMethod::LZ4);
+    }
+
+    #[test]
+    fn test_params_to_pool_builder_with_tls_flag() {
+        let mut params = HashMap::new();
+        drop(params.insert(USE_TLS_PARAM.to_string(), "true".to_string()));
+
+        let destination = Destination::from("http://localhost:8123");
+        let result = params_to_pool_builder(destination, &mut params, false);
+        assert!(result.is_ok());
+
+        let builder = result.unwrap();
+        assert!(builder.client_options().use_tls);
+    }
+
+    #[test]
+    fn test_params_to_pool_builder_with_tls_from_https() {
+        let mut params = HashMap::new();
+        // No explicit USE_TLS_PARAM, but https endpoint should enable TLS
+
+        let destination = Destination::from("https://localhost:8443");
+        let result = params_to_pool_builder(destination, &mut params, false);
+        assert!(result.is_ok());
+
+        let builder = result.unwrap();
+        assert!(builder.client_options().use_tls);
+    }
+
+    #[test]
+    fn test_params_to_pool_builder_with_domain() {
+        let mut params = HashMap::new();
+        drop(params.insert(DOMAIN_PARAM.to_string(), "example.com".to_string()));
+
+        let destination = Destination::from("http://localhost:8123");
+        let result = params_to_pool_builder(destination, &mut params, false);
+        assert!(result.is_ok());
+
+        let builder = result.unwrap();
+        assert_eq!(builder.client_options().domain, Some("example.com".to_string()));
+    }
+
+    #[test]
+    fn test_params_to_pool_builder_with_strings_as_strings() {
+        let mut params = HashMap::new();
+        drop(params.insert(STRINGS_AS_STRINGS_PARAM.to_string(), "true".to_string()));
+
+        let destination = Destination::from("http://localhost:8123");
+        let result = params_to_pool_builder(destination, &mut params, false);
+        assert!(result.is_ok());
+
+        let builder = result.unwrap();
+        assert!(builder.client_options().ext.arrow.unwrap().strings_as_strings);
+    }
+
+    #[test]
+    fn test_params_to_pool_builder_with_pool_settings() {
+        let mut params = HashMap::new();
+        drop(params.insert(POOL_MAX_SIZE_PARAM.to_string(), "20".to_string()));
+        drop(params.insert(POOL_MIN_IDLE_PARAM.to_string(), "5".to_string()));
+        drop(params.insert(POOL_TEST_ON_CHECK_OUT_PARAM.to_string(), "true".to_string()));
+
+        let destination = Destination::from("http://localhost:8123");
+        let result = params_to_pool_builder(destination, &mut params, false);
+        assert!(result.is_ok());
+
+        // The pool settings are applied via configure_pool, so we can't directly test them
+        // but we can verify the builder was created successfully
+        let _builder = result.unwrap();
+    }
+
+    #[test]
+    fn test_params_to_pool_builder_ignore_settings() {
+        let mut params = HashMap::new();
+        drop(params.insert("custom_setting".to_string(), "custom_value".to_string()));
+
+        let destination = Destination::from("http://localhost:8123");
+        let result = params_to_pool_builder(destination, &mut params, true);
+        assert!(result.is_ok());
+
+        // When ignore_settings is true, custom settings should be ignored
+        let _builder = result.unwrap();
+        // The params HashMap should still contain the custom setting since it's ignored
+        assert!(params.contains_key("custom_setting"));
+    }
+
+    #[test]
+    fn test_roundtrip_conversion() {
+        // Test that we can convert builder -> params -> builder
+        let original_destination = Destination::from("http://localhost:8123");
+        let original_builder = ArrowConnectionPoolBuilder::new(original_destination.clone())
+            .configure_client(|c| {
+                c.with_username("test_user")
+                    .with_password(Secret::new("test_password"))
+                    .with_database("test_db")
+                    .with_compression(CompressionMethod::LZ4)
+            });
+
+        // Convert to params
+        let params_result = pool_builder_to_params("http://localhost:8123", &original_builder);
+        assert!(params_result.is_ok());
+
+        let client_params = params_result.unwrap();
+        let mut string_params = client_params.into_params();
+
+        // Convert back to builder
+        let builder_result =
+            params_to_pool_builder(original_destination, &mut string_params, false);
+        assert!(builder_result.is_ok());
+
+        let new_builder = builder_result.unwrap();
+
+        // Verify key properties match
+        assert_eq!(new_builder.client_options().username, "test_user");
+        assert_eq!(new_builder.client_options().password.get(), "test_password");
+        assert_eq!(new_builder.client_options().compression, CompressionMethod::LZ4);
+        // Note: database will be "default" due to the forced override in params_to_pool_builder
+    }
+
+    #[test]
+    fn test_client_option_display() {
+        let secret_option = ClientOption::Secret(Secret::new("secret_value"));
+        let value_option = ClientOption::Value("plain_value".to_string());
+
+        assert_eq!(secret_option.to_string(), "secret_value");
+        assert_eq!(value_option.to_string(), "plain_value");
+    }
+
+    #[test]
+    fn test_client_option_params_deref() {
+        let mut params = HashMap::new();
+        drop(params.insert("key1".to_string(), ClientOption::Value("value1".to_string())));
+        drop(params.insert("key2".to_string(), ClientOption::Secret(Secret::new("secret"))));
+
+        let client_params = ClientOptionParams(params);
+
+        // Test Deref trait
+        assert_eq!(client_params.get("key1").unwrap().to_string(), "value1");
+        assert_eq!(client_params.get("key2").unwrap().to_string(), "secret");
+    }
+
+    #[test]
+    fn test_client_option_params_into_params() {
+        let mut params = HashMap::new();
+        drop(params.insert("key1".to_string(), ClientOption::Value("value1".to_string())));
+        drop(params.insert("key2".to_string(), ClientOption::Secret(Secret::new("secret"))));
+
+        let client_params = ClientOptionParams(params);
+        let string_params = client_params.into_params();
+
+        assert_eq!(string_params.get("key1").unwrap(), "value1");
+        assert_eq!(string_params.get("key2").unwrap(), "secret");
+    }
+}

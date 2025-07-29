@@ -70,6 +70,10 @@ impl ClickHouseTableProvider {
         Self { reader: inner, table, writer, exprs: Some(exprs) }
     }
 
+    // TODO: Remove - Docs
+    pub fn reader(&self) -> &SqlTable { &self.reader }
+
+    // TODO: Remove - Docs
     pub fn writer(&self) -> &ClickHouseConnectionPool { &self.writer }
 
     /// Executes a SQL query and returns a stream of record batches.

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
-use datafusion::error::{DataFusionError, Result};
+use datafusion::common::exec_err;
+use datafusion::error::Result;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::sql::TableReference;
@@ -65,10 +66,19 @@ impl SQLExecutor for SqlTable {
     }
 
     async fn table_names(&self) -> Result<Vec<String>> {
-        Err(DataFusionError::NotImplemented("table inference not implemented".to_string()))
+        let Some(schema) = self.table_reference.schema() else {
+            return exec_err!("Cannot fetch tables without a schema");
+        };
+        self.pool.connect().await?.tables(schema).await
     }
 
     async fn get_table_schema(&self, table_name: &str) -> Result<SchemaRef> {
-        self.pool.connect().await?.get_schema(&TableReference::from(table_name)).await
+        let table_ref = self
+            .table_reference
+            .schema()
+            .as_ref()
+            .map(|s| TableReference::partial(*s, table_name))
+            .unwrap_or(TableReference::from(table_name));
+        self.pool.connect().await?.get_schema(&table_ref).await
     }
 }

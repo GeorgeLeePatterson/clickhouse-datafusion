@@ -29,7 +29,7 @@ impl ClickHouseDataSink {
     }
 
     // It's important that the schemas align, but ordering and metadata don't matter
-    fn verify_input_schema(&self, input: &SchemaRef) -> Result<()> {
+    pub(crate) fn verify_input_schema(&self, input: &SchemaRef) -> Result<()> {
         let sink_fields = self.schema.fields();
         let input_fields = input.fields();
         if sink_fields.len() != input_fields.len() {
@@ -123,3 +123,4 @@ impl DataSink for ClickHouseDataSink {
         Ok(row_count)
     }
 }
+

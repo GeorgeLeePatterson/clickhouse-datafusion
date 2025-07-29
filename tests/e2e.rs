@@ -16,6 +16,10 @@ const TRACING_DIRECTIVES: &[(&str, &str)] = &[
 #[cfg(feature = "test-utils")]
 e2e_test!(builder, tests::test_clickhouse_builder, TRACING_DIRECTIVES, None);
 
+// Test table provider and sql
+#[cfg(feature = "test-utils")]
+e2e_test!(providers, tests::test_providers, TRACING_DIRECTIVES, None);
+
 // Test insert data
 #[cfg(feature = "test-utils")]
 e2e_test!(insert, tests::test_insert_data, TRACING_DIRECTIVES, None);
@@ -51,16 +55,22 @@ mod tests {
     use std::sync::Arc;
 
     use clickhouse_arrow::test_utils::ClickHouseContainer;
-    use clickhouse_datafusion::ClickHouseSessionContext;
     #[cfg(feature = "federation")]
     use clickhouse_datafusion::federation::FederatedContext as _;
+    use clickhouse_datafusion::utils::provider::extract_clickhouse_provider;
+    use clickhouse_datafusion::{
+        ClickHouseSessionContext, ClickHouseTableProvider, DEFAULT_CLICKHOUSE_CATALOG,
+    };
     use datafusion::arrow;
     use datafusion::arrow::array::AsArray;
     use datafusion::arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use datafusion::catalog::{
         CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
     };
+    use datafusion::datasource::TableProvider;
     use datafusion::error::Result;
+    use datafusion::logical_expr::dml::InsertOp;
+    use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::prelude::SessionContext;
     use datafusion::sql::TableReference;
     use tracing::{error, info};
@@ -101,6 +111,118 @@ mod tests {
         info!(">>> Registered existing table into alias `people_alias`");
 
         eprintln!(">> Test builder completed");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_providers(ch: Arc<ClickHouseContainer>) -> Result<()> {
+        let db = "test_db_providers";
+
+        // Initialize session context
+        let ctx = SessionContext::new();
+
+        // IMPORTANT! If federation is enabled, federate the context
+        #[cfg(feature = "federation")]
+        let ctx = ctx.federate();
+
+        let builder = common::helpers::create_builder(&ctx, &ch).await?;
+        let clickhouse = common::helpers::setup_test_tables(builder, db, &ctx).await?;
+
+        // -----------------------------
+        // Refresh catalog
+        let _catalog_provider = clickhouse.build(&ctx).await?;
+
+        let schema_people = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let table_ref = TableReference::full(DEFAULT_CLICKHOUSE_CATALOG, db, "people");
+        let provider = ctx.table_provider(table_ref.clone()).await?;
+        let table_provider = extract_clickhouse_provider(&provider);
+        assert!(table_provider.is_some(), "Could not extract ClickHouse table provider");
+        let clickhouse_table_provider = table_provider.unwrap();
+
+        let pool = clickhouse_table_provider.writer().clone();
+        let expected_provider = ClickHouseTableProvider::new_with_schema_and_exprs(
+            pool,
+            table_ref,
+            Arc::clone(&schema_people),
+            vec![],
+        );
+        assert_eq!(
+            clickhouse_table_provider.unique_context(),
+            expected_provider.unique_context(),
+            "Expected the same unique context"
+        );
+
+        #[cfg(feature = "federation")]
+        {
+            use datafusion_federation::sql::SQLExecutor;
+            use futures_util::StreamExt;
+
+            eprintln!(
+                "Successfully extracted ClickHouse table provider: {}",
+                clickhouse_table_provider.name()
+            );
+
+            // Ensure table provider retrieves correct schemas and tables
+            let mut table_names = clickhouse_table_provider.table_names().await?;
+            table_names.sort();
+            let mut expected_names =
+                vec!["people".to_string(), "people2".to_string(), "knicknames".to_string()];
+            expected_names.sort();
+            assert_eq!(table_names, expected_names, "Expected 3 table names");
+
+            let table_schema = clickhouse_table_provider.get_table_schema("people").await?;
+            assert_eq!(&table_schema, &schema_people, "Unexpected schema for people");
+
+            let schema_names =
+                clickhouse_table_provider.writer().connect().await?.schemas().await?;
+            assert!(schema_names.contains(&db.to_string()), "Expected {db} to be in schemas");
+
+            // Ensure SQLTable can be federated
+            let reader = Arc::new(clickhouse_table_provider.reader().clone());
+            let result = Arc::clone(&reader).create_federated_table_provider();
+            assert!(result.is_ok(), "Failed to create federated table provider");
+
+            // Ensure reader produces same results
+            let dialect = reader.as_ref().dialect();
+            assert!(dialect.identifier_quote_style("").is_some());
+
+            let result = reader.as_ref().table_names().await;
+            assert!(result.is_ok(), "Expected table names for sql table");
+            let mut sql_table_names = result.unwrap();
+            sql_table_names.sort();
+            assert_eq!(sql_table_names, expected_names, "Expected 3 table names");
+
+            let table_schema = reader.as_ref().get_table_schema("people").await?;
+            assert_eq!(&table_schema, &schema_people, "Unexpected schema for people");
+
+            let result = reader.as_ref().get_table_schema("does-not-exist").await;
+            assert!(result.is_err(), "Table should not exist");
+
+            // Ensure execute works on sql table
+            let query = format!("SELECT * FROM {db}.people");
+            let results = reader.as_ref().execute(&query, Arc::clone(&schema_people));
+            assert!(results.is_ok(), "Expected successful execution of SQL query");
+            let result =
+                results.unwrap().collect::<Vec<_>>().await.into_iter().collect::<Result<Vec<_>>>();
+            assert!(result.is_ok(), "Expected RecordBatches");
+            let batches = result.unwrap();
+            assert!(batches.is_empty(), "Expected no data");
+        }
+        let state = ctx.state();
+        let input = EmptyExec::new(schema_people);
+        assert!(
+            clickhouse_table_provider
+                .insert_into(&state, Arc::new(input), InsertOp::Overwrite)
+                .await
+                .is_err(),
+            "Should not allow overwrite"
+        );
+
+        eprintln!(">> Test schema completed");
 
         Ok(())
     }

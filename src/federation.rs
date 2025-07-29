@@ -102,10 +102,16 @@ impl SQLExecutor for ClickHouseTableProvider {
     }
 
     async fn get_table_schema(&self, table_name: &str) -> Result<SchemaRef> {
+        let table_ref = self
+            .table
+            .schema()
+            .as_ref()
+            .map(|s| TableReference::partial(*s, table_name))
+            .unwrap_or(TableReference::from(table_name));
         self.writer
             .connect()
             .await?
-            .get_schema(&TableReference::from(table_name))
+            .get_schema(&table_ref)
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))
     }
@@ -282,12 +288,87 @@ pub mod catalog {
                 return Ok(None);
             }
             let removed =
-                self.schemas.remove_if(name, |_, v| (cascade || !v.table_names().is_empty()));
-            // This means attempt to drop non-empty table without cascade
+                self.schemas.remove_if(name, |_, v| (cascade || v.table_names().is_empty()));
+
+            // This means attempt to drop non-empty table without cascade, since existence was
+            // checked above, and None implies the schema contained tables
             if !cascade && removed.is_none() {
                 return exec_err!("Cannot drop schema {} because other tables depend on it", name);
             }
             Ok(removed.map(|r| r.1))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::sync::Arc;
+
+        use datafusion::arrow::array::RecordBatch;
+        use datafusion::arrow::datatypes::Schema;
+        use datafusion::catalog::{
+            CatalogProvider, MemTable, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
+        };
+
+        use super::FederatedCatalogProvider;
+        use crate::federation::catalog::DEFAULT_NON_FEDERATED_SCHEMA;
+
+        #[test]
+        fn test_federated_catalog_creation() {
+            let catalog = FederatedCatalogProvider::default();
+            assert_eq!(
+                &catalog.default_schema, DEFAULT_NON_FEDERATED_SCHEMA,
+                "Unexpected default schema"
+            );
+
+            let catalog = FederatedCatalogProvider::new_with_default_schema("information_schema");
+            assert!(catalog.is_err(), "Cannot create catalog with invalid default schema");
+        }
+
+        #[test]
+        fn test_add_catalog() {
+            let mem_schema = Arc::new(MemorySchemaProvider::new()) as Arc<dyn SchemaProvider>;
+            let catalog = FederatedCatalogProvider::default();
+            drop(catalog.add_schema("memory", Arc::clone(&mem_schema)));
+
+            let mem_catalog = MemoryCatalogProvider::new();
+            drop(mem_catalog.register_schema("memory", Arc::clone(&mem_schema)).unwrap());
+
+            let result = catalog.add_catalog(&(Arc::new(mem_catalog) as Arc<dyn CatalogProvider>));
+            assert_eq!(result.len(), 1, "Expected MemorySchema returned");
+
+            let result = catalog.register_schema("memory", Arc::clone(&mem_schema));
+            assert!(result.is_ok());
+            let returned = result.unwrap();
+            assert!(returned.is_some(), "Expected a schema returned");
+            drop(returned.unwrap());
+
+            let result = catalog.deregister_schema("non-existent", false);
+            assert!(result.is_ok());
+            let returned = result.unwrap();
+            assert!(returned.is_none(), "Expected no schema returned");
+
+            let result = catalog.deregister_schema("memory", false);
+            // TODO: Remove
+            eprintln!("Deregister: {result:?}");
+
+            assert!(result.is_ok(), "Expected schema not found");
+            let returned = result.unwrap();
+            assert!(returned.is_some(), "Expected a schema removed");
+
+            let schema = returned.unwrap();
+            let schema_ref = Arc::new(Schema::empty());
+            let partition = RecordBatch::new_empty(Arc::clone(&schema_ref));
+            let table = Arc::new(MemTable::try_new(schema_ref, vec![vec![partition]]).unwrap());
+            drop(schema.register_table("mem_table".into(), table).unwrap());
+            drop(catalog.register_schema("memory", schema).unwrap());
+
+            let result = catalog.deregister_schema("memory", false);
+            assert!(result.is_err(), "Expected non-cascase to fail");
+
+            let result = catalog.deregister_schema("memory", true);
+            assert!(result.is_ok(), "Expected cascase to succeed");
+            let returned = result.unwrap();
+            assert!(returned.is_some(), "Expected a schema removed");
         }
     }
 }

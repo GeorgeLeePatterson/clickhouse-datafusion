@@ -129,15 +129,13 @@ impl<'a> ClickHouseConnection<'a> {
         let db = table_reference.schema();
         let table = table_reference.table();
         let mut schemas =
-            self.conn.fetch_schema(db, &[table][..], None).await.map_err(|e| match e {
-                e @ ClickhouseNativeError::UndefinedTables { .. } => {
-                    error!(error = ?e, ?db, ?table, "Tables undefined");
-                    utils::map_clickhouse_err(e)
+            self.conn.fetch_schema(db, &[table][..], None).await.map_err(|error| {
+                if let ClickhouseNativeError::UndefinedTables { .. } = error {
+                    error!(?error, ?db, ?table, "Tables undefined");
+                } else {
+                    error!(?error, ?db, ?table, "Unknown error occurred while fetching schema");
                 }
-                e => {
-                    error!(error = ?e, ?db, ?table, "Unknown error occurred while fetching schema");
-                    utils::map_clickhouse_err(e)
-                }
+                utils::map_clickhouse_err(error)
             })?;
 
         schemas
@@ -191,3 +189,64 @@ impl<'a> ClickHouseConnection<'a> {
 }
 
 // TODO: Provide compat with datafusion-table-providers DbConnection, AsyncDbConnection
+
+#[cfg(test)]
+mod tests {
+    use datafusion::sql::TableReference;
+
+    use super::*;
+
+    #[test]
+    fn test_table_reference_schema_extraction() {
+        // Test the logic used in get_schema method
+        let table_ref = TableReference::full("catalog", "schema", "table");
+        assert_eq!(table_ref.schema(), Some("schema"));
+        assert_eq!(table_ref.table(), "table");
+
+        let partial_ref = TableReference::partial("schema", "table");
+        assert_eq!(partial_ref.schema(), Some("schema"));
+        assert_eq!(partial_ref.table(), "table");
+
+        let bare_ref = TableReference::bare("table");
+        assert_eq!(bare_ref.schema(), None);
+        assert_eq!(bare_ref.table(), "table");
+    }
+
+    #[test]
+    fn test_error_handling_patterns() {
+        use clickhouse_arrow::Error as ClickhouseNativeError;
+
+        use crate::utils::map_clickhouse_err;
+
+        // Test the error patterns used in connection methods
+        let undefined_tables_error = ClickhouseNativeError::UndefinedTables {
+            db:     "test_db".to_string(),
+            tables: vec!["test_table".to_string()],
+        };
+
+        let mapped_error = map_clickhouse_err(undefined_tables_error);
+        match mapped_error {
+            DataFusionError::External(boxed_error) => {
+                let error_str = boxed_error.to_string();
+                assert!(error_str.contains("Tables undefined"));
+                assert!(error_str.contains("test_db"));
+                assert!(error_str.contains("test_table"));
+            }
+            _ => panic!("Expected External error"),
+        }
+    }
+
+    #[test]
+    fn test_join_push_down_creation() {
+        use crate::sql::JoinPushDown;
+
+        // Test the join push down logic used in connection pool creation
+        let identifier = "test_pool";
+        let join_push_down = JoinPushDown::AllowedFor(identifier.to_string());
+
+        match join_push_down {
+            JoinPushDown::AllowedFor(id) => assert_eq!(id, "test_pool"),
+            JoinPushDown::Disallow => panic!("Expected AllowedFor variant"),
+        }
+    }
+}

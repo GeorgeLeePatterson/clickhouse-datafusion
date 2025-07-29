@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
 
-use datafusion::catalog::TableProvider;
 use datafusion::common::tree_node::{TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::common::{Column, DFSchema, Result, ScalarValue, TableReference};
 use datafusion::datasource::source_as_provider;
@@ -11,7 +10,7 @@ use datafusion::logical_expr::{
 };
 
 use super::pushdown::find_clickhouse_function;
-use crate::ClickHouseTableProvider;
+use crate::utils::provider::extract_clickhouse_provider;
 
 /// The context of a column reference's source. Column references identified throughout a plan tree,
 /// if resolveable to table's at the leafs of the plan, can be "grouped" by their source context.
@@ -560,6 +559,7 @@ impl<'n> TreeNodeVisitor<'n> for SourceLineageVistor {
     }
 }
 
+#[cfg_attr(not(feature = "test-utils"), expect(unused_variables))]
 fn extract_source_context(scan: &TableScan, visitor: &SourceLineageVistor) -> Arc<SourceContext> {
     // Initialize the source context for this table scan
     if let Some(context) = attempt_extract_unique_context(scan) {
@@ -584,26 +584,6 @@ fn extract_source_context(scan: &TableScan, visitor: &SourceLineageVistor) -> Ar
 
 // Convert to TableProvider and try to ascertain the table's context
 fn attempt_extract_unique_context(scan: &TableScan) -> Option<SourceContext> {
-    #[cfg(feature = "federation")]
-    fn extract_clickhouse_provider(
-        provider: &Arc<dyn TableProvider>,
-    ) -> Option<&ClickHouseTableProvider> {
-        use datafusion_federation::FederatedTableProviderAdaptor;
-
-        let fed_provider = provider.as_any().downcast_ref::<FederatedTableProviderAdaptor>()?;
-        fed_provider
-            .table_provider
-            .as_ref()
-            .and_then(|p| p.as_any().downcast_ref::<ClickHouseTableProvider>())
-    }
-
-    #[cfg(not(feature = "federation"))]
-    fn extract_clickhouse_provider(
-        provider: &Arc<dyn TableProvider>,
-    ) -> Option<&ClickHouseTableProvider> {
-        provider.as_any().downcast_ref::<ClickHouseTableProvider>()
-    }
-
     let dyn_provider = source_as_provider(&scan.source).ok()?;
     let provider = extract_clickhouse_provider(&dyn_provider)?;
     Some(SourceContext::Context(provider.unique_context()))

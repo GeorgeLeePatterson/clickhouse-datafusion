@@ -47,7 +47,8 @@ impl ClickHouseTableFactory {
         );
 
         #[cfg(feature = "federation")]
-        let provider = Arc::new(provider.create_federated_table_provider());
+        let provider =
+            Arc::new(provider.create_federated_table_provider()) as Arc<dyn TableProvider>;
 
         Ok(provider)
     }

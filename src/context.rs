@@ -211,7 +211,7 @@ impl ClickHouseSessionContext {
 
         for reference in references {
             // DEV (DataFusion PR): Post PR that makes `resolve_table_ref` pub and access to tables
-            // entries let resolved = state.resolve_table_ref(reference);
+            // entries: let resolved = state.resolve_table_ref(reference);
             let catalog = &state.config_options().catalog;
             let resolved = reference.resolve(&catalog.default_catalog, &catalog.default_schema);
             if let Entry::Vacant(v) = provider.tables.entry(resolved) {
@@ -237,9 +237,7 @@ impl ClickHouseSessionContext {
             enable_options_value_normalization: sql_parser_options
                 .enable_options_value_normalization,
             support_varchar_with_length:        sql_parser_options.support_varchar_with_length,
-            map_varchar_to_utf8view:            sql_parser_options.map_varchar_to_utf8view,
-            // TODO: Remove
-            // map_string_types_to_utf8view:       sql_parser_options.map_string_types_to_utf8view,
+            map_string_types_to_utf8view:       sql_parser_options.map_string_types_to_utf8view,
             collect_spans:                      sql_parser_options.collect_spans,
         }
     }
@@ -417,5 +415,290 @@ impl ContextProvider for ClickHouseContextProvider {
             .get_file_format_factory(ext)
             .ok_or(plan_datafusion_err!("There is no registered file format with ext {ext}"))
             .map(|file_type| format_as_file_type(file_type))
+    }
+}
+
+#[cfg(all(test, feature = "test-utils"))]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::DFSchema;
+    use datafusion::logical_expr::planner::{
+        ExprPlanner, PlannerResult, RawBinaryExpr, TypePlanner,
+    };
+    use datafusion::prelude::{SessionContext, lit};
+    use datafusion::sql::TableReference;
+    use datafusion::sql::sqlparser::ast;
+
+    use super::*;
+
+    // Mock TypePlanner for testing
+    #[derive(Debug)]
+    struct MockTypePlanner;
+
+    impl TypePlanner for MockTypePlanner {
+        fn plan_type(&self, _expr: &ast::DataType) -> Result<Option<DataType>> {
+            Ok(Some(DataType::Utf8))
+        }
+    }
+
+    // Mock ExprPlanner for testing
+    #[derive(Debug)]
+    struct MockExprPlanner;
+
+    impl ExprPlanner for MockExprPlanner {
+        fn plan_binary_op(
+            &self,
+            expr: RawBinaryExpr,
+            _schema: &DFSchema,
+        ) -> Result<PlannerResult<RawBinaryExpr>> {
+            Ok(PlannerResult::Original(expr))
+        }
+    }
+
+    fn create_test_context_provider() -> ClickHouseContextProvider {
+        let ctx = SessionContext::new();
+        let state = ctx.state();
+        let tables = HashMap::new();
+        ClickHouseContextProvider::new(state, tables)
+    }
+
+    #[test]
+    fn test_with_expr_planner() {
+        let mut provider = create_test_context_provider();
+        assert!(provider.expr_planners.is_empty());
+
+        let expr_planner = Arc::new(MockExprPlanner) as Arc<dyn ExprPlanner>;
+        provider = provider.with_expr_planner(Arc::clone(&expr_planner));
+
+        assert_eq!(provider.expr_planners.len(), 1);
+        assert_eq!(provider.get_expr_planners().len(), 1);
+    }
+
+    #[test]
+    fn test_with_type_planner() {
+        let mut provider = create_test_context_provider();
+        assert!(provider.type_planner.is_none());
+
+        let type_planner = Arc::new(MockTypePlanner) as Arc<dyn TypePlanner>;
+        provider = provider.with_type_planner(Arc::clone(&type_planner));
+
+        assert!(provider.type_planner.is_some());
+    }
+
+    #[test]
+    fn test_get_type_planner() {
+        let provider = create_test_context_provider();
+        assert!(provider.get_type_planner().is_none());
+
+        let type_planner = Arc::new(MockTypePlanner) as Arc<dyn TypePlanner>;
+        let provider = provider.with_type_planner(Arc::clone(&type_planner));
+
+        assert!(provider.get_type_planner().is_some());
+    }
+
+    #[test]
+    fn test_get_table_function_source_not_found() {
+        let provider = create_test_context_provider();
+        let args = vec![lit("test")];
+
+        let result = provider.get_table_function_source("nonexistent_function", args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_cte_work_table() {
+        let provider = create_test_context_provider();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+
+        let result = provider.create_cte_work_table("test_cte", Arc::clone(&schema));
+        assert!(result.is_ok());
+
+        let table_source = result.unwrap();
+        assert_eq!(table_source.schema(), schema);
+    }
+
+    #[test]
+    fn test_get_variable_type_empty() {
+        let provider = create_test_context_provider();
+        let result = provider.get_variable_type(&[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_variable_type_system_variables() {
+        let provider = create_test_context_provider();
+        // System variables start with @@
+        let result = provider.get_variable_type(&["@@version".to_string()]);
+        // Since no variable providers are set up, this should return None
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_variable_type_user_defined() {
+        let provider = create_test_context_provider();
+        // User-defined variables don't start with @@
+        let result = provider.get_variable_type(&["user_var".to_string()]);
+        // Since no variable providers are set up, this should return None
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_file_type_unknown_extension() {
+        let provider = create_test_context_provider();
+        let result = provider.get_file_type("unknown_ext");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_file_type_known_extension() {
+        let provider = create_test_context_provider();
+        // CSV should be a known file type in DataFusion
+        let result = provider.get_file_type("csv");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_function_meta_clickhouse_udf() {
+        let provider = create_test_context_provider();
+
+        // Test clickhouse UDF alias
+        let result = provider.get_function_meta("clickhouse");
+        assert!(result.is_some());
+        let udf = result.unwrap();
+        assert_eq!(udf.name(), "clickhouse");
+    }
+
+    #[test]
+    fn test_get_function_meta_placeholder_udf() {
+        let provider = create_test_context_provider();
+
+        // Test unknown function should return placeholder UDF
+        let result = provider.get_function_meta("unknown_function");
+        assert!(result.is_some());
+        let udf = result.unwrap();
+        assert_eq!(udf.name(), "unknown_function");
+    }
+
+    #[test]
+    fn test_get_function_meta_aggregate_function() {
+        let provider = create_test_context_provider();
+
+        // Test known aggregate function should return None (not wrapped as ScalarUDF)
+        let result = provider.get_function_meta("sum");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_function_meta_window_function() {
+        let provider = create_test_context_provider();
+
+        // Test known window function should return None (not wrapped as ScalarUDF)
+        let result = provider.get_function_meta("row_number");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_table_source_not_found() {
+        let provider = create_test_context_provider();
+        let table_ref = TableReference::bare("nonexistent_table");
+
+        let result = provider.get_table_source(table_ref);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_table_ref() {
+        let provider = create_test_context_provider();
+
+        // Test bare table reference
+        let table_ref = TableReference::bare("test_table");
+        let resolved = provider.resolve_table_ref(table_ref);
+        assert_eq!(resolved.table.as_ref(), "test_table");
+
+        // Test partial table reference (schema.table)
+        let table_ref = TableReference::partial("test_schema", "test_table");
+        let resolved = provider.resolve_table_ref(table_ref);
+        assert_eq!(resolved.schema.as_ref(), "test_schema");
+        assert_eq!(resolved.table.as_ref(), "test_table");
+
+        // Test full table reference (catalog.schema.table)
+        let table_ref = TableReference::full("test_catalog", "test_schema", "test_table");
+        let resolved = provider.resolve_table_ref(table_ref);
+        assert_eq!(resolved.catalog.as_ref(), "test_catalog");
+        assert_eq!(resolved.schema.as_ref(), "test_schema");
+        assert_eq!(resolved.table.as_ref(), "test_table");
+    }
+
+    #[test]
+    fn test_udf_names() {
+        let provider = create_test_context_provider();
+        let udf_names = provider.udf_names();
+        // Should return the names of registered scalar functions
+        // The exact contents depend on DataFusion's built-in functions
+        assert!(!udf_names.is_empty());
+    }
+
+    #[test]
+    fn test_udaf_names() {
+        let provider = create_test_context_provider();
+        let udaf_names = provider.udaf_names();
+        // Should return the names of registered aggregate functions
+        assert!(!udaf_names.is_empty());
+        assert!(udaf_names.contains(&"sum".to_string()));
+        assert!(udaf_names.contains(&"count".to_string()));
+    }
+
+    #[test]
+    fn test_udwf_names() {
+        let provider = create_test_context_provider();
+        let udwf_names = provider.udwf_names();
+        // Should return the names of registered window functions
+        assert!(!udwf_names.is_empty());
+        assert!(udwf_names.contains(&"row_number".to_string()));
+    }
+
+    #[test]
+    fn test_options() {
+        let provider = create_test_context_provider();
+        let options = provider.options();
+        // Should return ConfigOptions from the session state
+        assert!(!options.catalog.default_catalog.is_empty());
+        assert!(!options.catalog.default_schema.is_empty());
+    }
+
+    #[test]
+    fn test_get_aggregate_meta() {
+        let provider = create_test_context_provider();
+
+        // Test known aggregate function
+        let result = provider.get_aggregate_meta("sum");
+        assert!(result.is_some());
+        let udf = result.unwrap();
+        assert_eq!(udf.name().to_lowercase().as_str(), "sum");
+
+        // Test unknown aggregate function
+        let result = provider.get_aggregate_meta("unknown_aggregate");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_window_meta() {
+        let provider = create_test_context_provider();
+
+        // Test known window function
+        let result = provider.get_window_meta("row_number");
+        assert!(result.is_some());
+        let udf = result.unwrap();
+        assert_eq!(udf.name().to_lowercase().as_str(), "row_number");
+
+        // Test unknown window function
+        let result = provider.get_window_meta("unknown_window");
+        assert!(result.is_none());
     }
 }

@@ -146,12 +146,318 @@ mod tests {
 
     use datafusion::arrow;
     use datafusion::arrow::datatypes::*;
+    use datafusion::common::ScalarValue;
+    use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDFImpl};
     use datafusion::prelude::SessionContext;
+
+    use super::*;
+
+    #[test]
+    fn test_clickhouse_func_new() {
+        let func = ClickHouseFunc::new();
+        assert_eq!(func.name(), "clickhouse_func");
+        assert_eq!(func.aliases(), &["clickhousefunc", "clickhouse_func"]);
+    }
+
+    #[test]
+    fn test_clickhouse_func_default() {
+        let func = ClickHouseFunc::default();
+        assert_eq!(func.name(), "clickhouse_func");
+    }
+
+    #[test]
+    fn test_clickhouse_func_constants() {
+        assert_eq!(ClickHouseFunc::ARG_LEN, 2);
+        assert_eq!(CLICKHOUSE_FUNC_ALIASES, &["clickhousefunc", "clickhouse_func"]);
+    }
+
+    #[test]
+    fn test_clickhouse_func_udf_creation() {
+        let udf = clickhouse_func_udf();
+        assert_eq!(udf.name(), "clickhouse_func");
+    }
+
+    #[test]
+    fn test_return_type_valid_args() {
+        let func = ClickHouseFunc::new();
+        let arg_types = vec![DataType::Utf8, DataType::Int32];
+        let result = func.return_type(&arg_types);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), DataType::Int32);
+    }
+
+    #[test]
+    fn test_return_type_valid_args_utf8_view() {
+        let func = ClickHouseFunc::new();
+        let arg_types = vec![DataType::Utf8View, DataType::Float64];
+        let result = func.return_type(&arg_types);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), DataType::Float64);
+    }
+
+    #[test]
+    fn test_return_type_valid_args_large_utf8() {
+        let func = ClickHouseFunc::new();
+        let arg_types = vec![DataType::LargeUtf8, DataType::Boolean];
+        let result = func.return_type(&arg_types);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), DataType::Boolean);
+    }
+
+    #[test]
+    fn test_return_type_wrong_arg_count() {
+        let func = ClickHouseFunc::new();
+
+        // Too few arguments
+        let arg_types = vec![DataType::Utf8];
+        let result = func.return_type(&arg_types);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Expected two string arguments"));
+
+        // Too many arguments
+        let arg_types = vec![DataType::Utf8, DataType::Int32, DataType::Float64];
+        let result = func.return_type(&arg_types);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Expected two string arguments"));
+    }
+
+    #[test]
+    fn test_return_field_from_args_valid() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
+        let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
+        let scalar = [
+            Some(ScalarValue::Utf8(Some("count()".to_string()))),
+            Some(ScalarValue::Utf8(Some("Int64".to_string()))),
+        ];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref(), scalar[1].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_ok());
+        let field = result.unwrap();
+        assert_eq!(field.name(), "clickhouse_func");
+        assert_eq!(field.data_type(), &DataType::Int64);
+        assert!(field.is_nullable());
+    }
+
+    #[test]
+    fn test_return_field_from_args_utf8_view() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Utf8View, false));
+        let field2 = Arc::new(Field::new("type", DataType::Utf8View, false));
+        let scalar = [
+            Some(ScalarValue::Utf8View(Some("sum(x)".to_string()))),
+            Some(ScalarValue::Utf8View(Some("Float64".to_string()))),
+        ];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref(), scalar[1].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_ok());
+        let field = result.unwrap();
+        assert_eq!(field.data_type(), &DataType::Float64);
+    }
+
+    #[test]
+    fn test_return_field_from_args_large_utf8() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::LargeUtf8, false));
+        let field2 = Arc::new(Field::new("type", DataType::LargeUtf8, false));
+
+        let scalar = [
+            Some(ScalarValue::LargeUtf8(Some("avg(y)".to_string()))),
+            Some(ScalarValue::LargeUtf8(Some("Boolean".to_string()))),
+        ];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref(), scalar[1].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_ok());
+        let field = result.unwrap();
+        assert_eq!(field.data_type(), &DataType::Boolean);
+    }
+
+    #[test]
+    fn test_return_field_from_args_wrong_field_count() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
+        let scalar = [Some(ScalarValue::Utf8(Some("count()".to_string())))];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1],
+            scalar_arguments: &[scalar[0].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Expected two string arguments"));
+    }
+
+    #[test]
+    fn test_return_field_from_args_wrong_scalar_count() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
+        let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
+        let scalar = [Some(ScalarValue::Utf8(Some("count()".to_string())))];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Expected two string arguments"));
+    }
+
+    #[test]
+    fn test_return_field_from_args_missing_syntax() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
+        let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
+        let scalar = [None, Some(ScalarValue::Utf8(Some("Int64".to_string())))];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref(), scalar[1].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("First argument (syntax) missing"));
+    }
+
+    #[test]
+    fn test_return_field_from_args_missing_type() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
+        let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
+        let scalar = [Some(ScalarValue::Utf8(Some("count()".to_string()))), None];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref(), scalar[1].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Second argument (data type) missing"));
+    }
+
+    #[test]
+    fn test_return_field_from_args_null_syntax() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
+        let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
+        let scalar =
+            [Some(ScalarValue::Utf8(None)), Some(ScalarValue::Utf8(Some("Int64".to_string())))];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref(), scalar[1].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing syntax argument"));
+    }
+
+    #[test]
+    fn test_return_field_from_args_null_type() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
+        let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
+        let scalar =
+            [Some(ScalarValue::Utf8(Some("count()".to_string()))), Some(ScalarValue::Utf8(None))];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref(), scalar[1].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing data type argument"));
+    }
+
+    #[test]
+    fn test_return_field_from_args_invalid_type_string() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
+        let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
+        let scalar = [
+            Some(ScalarValue::Utf8(Some("count()".to_string()))),
+            Some(ScalarValue::Utf8(Some("InvalidType".to_string()))),
+        ];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref(), scalar[1].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid type string"));
+    }
+
+    #[test]
+    fn test_return_field_from_args_non_string_arguments() {
+        let func = ClickHouseFunc::new();
+        let field1 = Arc::new(Field::new("syntax", DataType::Int32, false));
+        let field2 = Arc::new(Field::new("type", DataType::Int32, false));
+        let scalar = [Some(ScalarValue::Int32(Some(42))), Some(ScalarValue::Int32(Some(24)))];
+        let args = ReturnFieldArgs {
+            arg_fields:       &[field1, field2],
+            scalar_arguments: &[scalar[0].as_ref(), scalar[1].as_ref()],
+        };
+
+        let result = func.return_field_from_args(args);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("clickhouse_func expects string arguments")
+        );
+    }
+
+    #[test]
+    fn test_invoke_with_args_not_implemented() {
+        let func = ClickHouseFunc::new();
+        let args = ScalarFunctionArgs {
+            args:         vec![],
+            arg_fields:   vec![],
+            number_rows:  1,
+            return_field: Arc::new(Field::new("", DataType::Int32, false)),
+        };
+        let result = func.invoke_with_args(args);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("UDFs are evaluated after data has been fetched")
+        );
+    }
+
+    #[test]
+    fn test_documentation() {
+        let func = ClickHouseFunc::new();
+        let doc = func.documentation();
+        assert!(doc.is_some());
+
+        let documentation = get_doc();
+        assert!(documentation.description.contains("Add one to an int32"));
+    }
+
+    #[test]
+    fn test_as_any() {
+        let func = ClickHouseFunc::new();
+        let any_ref = func.as_any();
+        assert!(any_ref.downcast_ref::<ClickHouseFunc>().is_some());
+    }
 
     #[tokio::test]
     async fn test_clickhouse_udf() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = SessionContext::new();
-        ctx.register_udf(super::clickhouse_func_udf());
+        ctx.register_udf(clickhouse_func_udf());
 
         let schema = SchemaRef::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),

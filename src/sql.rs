@@ -148,12 +148,6 @@ impl SqlTable {
         builder.limit(0, limit)?.build()
     }
 
-    #[must_use]
-    pub fn name(&self) -> &str { &self.name }
-
-    #[must_use]
-    pub fn clone_pool(&self) -> ClickHouseConnectionPool { self.pool.clone() }
-
     fn create_physical_plan(
         &self,
         projection: Option<&Vec<usize>>,
@@ -358,34 +352,4 @@ impl ExecutionPlan for ClickHouseSqlExec {
 #[allow(clippy::needless_pass_by_value)]
 fn to_execution_error(e: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> DataFusionError {
     DataFusionError::Execution(format!("{}", e.into()).to_string())
-}
-
-#[cfg(feature = "datafusion-table-providers")]
-pub mod compat {
-    //! Module for compatibility with [datafusion-table-providers](https://github.com/datafusion-contrib/datafusion-table-providers)
-    use super::JoinPushDown;
-
-    impl From<JoinPushDown> for datafusion_table_providers::sql::db_connection_pool::JoinPushDown {
-        fn from(join_push_down: JoinPushDown) -> Self {
-            match join_push_down {
-                JoinPushDown::Disallow => Self::Disallow,
-                JoinPushDown::AllowedFor(context) => Self::AllowedFor(context),
-            }
-        }
-    }
-
-    impl From<datafusion_table_providers::sql::db_connection_pool::JoinPushDown> for JoinPushDown {
-        fn from(
-            join_push_down: datafusion_table_providers::sql::db_connection_pool::JoinPushDown,
-        ) -> Self {
-            match join_push_down {
-                datafusion_table_providers::sql::db_connection_pool::JoinPushDown::Disallow => {
-                    Self::Disallow
-                }
-                datafusion_table_providers::sql::db_connection_pool::JoinPushDown::AllowedFor(
-                    context,
-                ) => Self::AllowedFor(context),
-            }
-        }
-    }
 }
