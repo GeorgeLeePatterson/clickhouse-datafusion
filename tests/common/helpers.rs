@@ -2,16 +2,31 @@ use std::sync::Arc;
 
 use clickhouse_arrow::prelude::ClickHouseEngine;
 use clickhouse_arrow::test_utils::ClickHouseContainer;
-use clickhouse_arrow::{CompressionMethod, CreateOptions};
+use clickhouse_arrow::{ClientBuilder, CompressionMethod, CreateOptions};
 use clickhouse_datafusion::{
     ClickHouseBuilder, ClickHouseCatalogBuilder, DEFAULT_CLICKHOUSE_CATALOG, default_arrow_options,
 };
+use datafusion::arrow;
 use datafusion::arrow::array::AsArray;
 use datafusion::arrow::compute::kernels::cast;
 use datafusion::arrow::datatypes::{DataType, Field, Int32Type, Schema};
+use datafusion::catalog::{
+    CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
+};
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 use tracing::{debug, error, info};
+
+// Configure arrow/clickhouse client
+#[allow(unused)]
+pub(crate) fn configure_client(client: ClientBuilder, ch: &ClickHouseContainer) -> ClientBuilder {
+    client
+        .with_username(&ch.user)
+        .with_password(&ch.password)
+        .with_ipv4_only(true)
+        .with_compression(CompressionMethod::LZ4)
+        .with_arrow_options(default_arrow_options())
+}
 
 // Create catalog builder
 #[allow(unused)]
@@ -20,13 +35,20 @@ pub(crate) async fn create_builder(
     ch: &ClickHouseContainer,
 ) -> Result<ClickHouseCatalogBuilder> {
     ClickHouseBuilder::new(ch.get_native_url())
-        .configure_client(|c| {
-            c.with_username(&ch.user)
-                .with_password(&ch.password)
-                .with_ipv4_only(true)
-                .with_compression(CompressionMethod::LZ4)
-                .with_arrow_options(default_arrow_options())
-        })
+        .configure_client(|c| configure_client(c, ch))
+        .build_catalog(ctx, Some(DEFAULT_CLICKHOUSE_CATALOG))
+        .await
+}
+
+// Create catalog builder
+#[allow(unused)]
+pub(crate) async fn create_builder_with_coercion(
+    ctx: &SessionContext,
+    ch: &ClickHouseContainer,
+) -> Result<ClickHouseCatalogBuilder> {
+    ClickHouseBuilder::new(ch.get_native_url())
+        .configure_client(|c| configure_client(c, ch))
+        .with_coercion(true)
         .build_catalog(ctx, Some(DEFAULT_CLICKHOUSE_CATALOG))
         .await
 }
@@ -65,7 +87,7 @@ pub(crate) async fn setup_test_tables(
         .with_schema(db)
         .await?
         // Create People table
-        .with_table("people", ClickHouseEngine::MergeTree, schema_people)
+        .with_new_table("people", ClickHouseEngine::MergeTree, schema_people)
         .update_create_options(|opts: CreateOptions| {
             opts.with_order_by(&["id".into(), "name".into()])
                 .with_primary_keys(&["id".into()])
@@ -74,7 +96,7 @@ pub(crate) async fn setup_test_tables(
         .create(ctx)
         .await?
         // Create Knicknames table
-        .with_table_and_options(
+        .with_new_table_and_options(
             "knicknames",
             schema_knicknames,
             CreateOptions::new(ClickHouseEngine::MergeTree.to_string())
@@ -84,7 +106,7 @@ pub(crate) async fn setup_test_tables(
         .create(ctx)
         .await?
         // Create People2 table
-        .with_table("people2", ClickHouseEngine::MergeTree, Arc::clone(&schema_people2))
+        .with_new_table("people2", ClickHouseEngine::MergeTree, Arc::clone(&schema_people2))
         .update_create_options(|opts| opts.with_order_by(&["id".into()]))
         .create(ctx)
         .await
@@ -149,42 +171,20 @@ pub(crate) async fn insert_test_data(
     Ok(clickhouse)
 }
 
-// TODO: Remove
+// Add in-memory table
 #[allow(unused)]
-pub(crate) async fn insert_test_data_silent(
-    clickhouse: ClickHouseCatalogBuilder,
-    db: &str,
-    ctx: &SessionContext,
-) -> Result<ClickHouseCatalogBuilder> {
-    // -----------------------------
-    // Insert data using SQL
-    drop(
-        ctx.sql(&format!(
-            "INSERT INTO clickhouse.{db}.people (id, name) VALUES (1, 'Alice'), (2, 'Bob')"
-        ))
-        .await?
-        .collect()
-        .await?,
-    );
-
-    // -----------------------------
-    // Insert data using SQL
-    drop(
-        ctx.sql(&format!(
-            "
-                INSERT INTO clickhouse.{db}.people2 (id, name, names)
-                VALUES
-                    (1, 'Bob', make_array('Buddha', 'Zugus', 'Lulu', 'Kitty', 'Mitty')),
-                    (2, 'Alice', make_array('Jazz', 'Kaya', 'Vienna', 'Susie', 'Georgie')),
-                    (3, 'Charlie', make_array('Susana', 'Adrienne', 'Blayke'))
-                "
-        ))
-        .await?
-        .collect()
-        .await?,
-    );
-
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-    Ok(clickhouse)
+pub(crate) fn add_memory_table_and_data(ctx: &SessionContext) -> Result<()> {
+    let mem_schema = Arc::new(Schema::new(vec![Field::new("event_id", DataType::Int32, false)]));
+    let mem_table =
+        Arc::new(datafusion::datasource::MemTable::try_new(Arc::clone(&mem_schema), vec![vec![
+            arrow::record_batch::RecordBatch::try_new(mem_schema, vec![Arc::new(
+                arrow::array::Int32Array::from(vec![1, 2]),
+            )])?,
+        ]])?);
+    let mem_catalog = Arc::new(MemoryCatalogProvider::new());
+    let mem_schema = Arc::new(MemorySchemaProvider::new());
+    drop(mem_schema.register_table("mem_events".into(), mem_table)?);
+    drop(mem_catalog.register_schema("internal", mem_schema)?);
+    drop(ctx.register_catalog("memory", mem_catalog));
+    Ok(())
 }

@@ -28,6 +28,20 @@ TODO: Remove - explain why these are necessary
   could be provided as sql is being parsed.
 - Well, to be clear, you can do that currently, that is how `ClickHouseSessionContext` works.
 
+## `ClickHousePushdownUDF`, `ClickHouseFunctionNode`, and `datafusion-federation`
+
+TODO: Remove - explain and expand on the following:
+
+- When federation is enabled, no custom `Extension` node will be used. The result of query planning
+may differ than when federation is disabled. That is because `datafusion-federation` uses a different method to "federate" plans.
+- Explain details of the syntax of the clickhouse function
+  - The second argument is the RETURN type of the result of running the function on the remote
+  `ClickHouse` server. If this is wrong, the query may fail.
+  - There are plans to loosen the syntax to allow automatic type coercion, but this needs more work.
+  - For example, there is not a simple way to specify that an `arrayJoin` will produce a `Utf8` as
+  opposed to the `List(Utf8)` type that the DataFusion schema will reflect.
+
+
 ### Example Usage
 
 This example demonstrates:
@@ -39,28 +53,23 @@ This example demonstrates:
 ```rust,ignore
 let query = format!(
     "
-    SELECT p.name
-        , m.event_id
-        -- ClickHouse Function, parsed fully into SQL AST
-        , clickhouse(exp(p2.id), 'Float64')
-        -- DataFusion UDF - works as intended
-        , concat(p2.names, 'hello')
+    SELECT p.name,
+           m.event_id,
+           -- ClickHouse Function, parsed fully into SQL AST
+           clickhouse(exp(p2.id), 'Float64'),
+           -- DataFusion UDF - works as intended
+           concat(p2.names, 'hello')
     FROM memory.internal.mem_events m
     JOIN clickhouse.{db}.people p ON p.id = m.event_id
     JOIN (
-        SELECT id
-            -- Note the backticks '`'. Prevents being recognized as DataFusion UDF
-            , clickhouse(`arrayJoin`(names), 'Utf8') as names
+        SELECT id,
+               -- Note the backticks '`'. Prevents being recognized as DataFusion UDF
+               clickhouse(`arrayJoin`(names), 'Utf8') as names
         FROM clickhouse.{db}.people2
     ) p2 ON p.id = p2.id
     "
 );
-let results = ctx
-    .sql(&query)
-    .await
-    .inspect_err(|error| error!("Error exe 4 query: {}", error))?
-    .collect()
-    .await?;
+let results = ctx.sql(&query).await.collect().await?;
 arrow::util::pretty::print_batches(&results)?;
 ```
 

@@ -1,11 +1,9 @@
 pub(crate) mod helpers;
 
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use clickhouse_arrow::test_utils::{self, ClickHouseContainer};
 use clickhouse_datafusion::prelude::datafusion::error::Result;
-use futures_util::FutureExt;
 use tracing::{debug, error};
 
 // Env variables to control aspects of testing
@@ -36,51 +34,6 @@ macro_rules! e2e_test {
     };
 }
 
-/// Test harness for catching panics and attempting to shutdown the container
-///
-/// # Errors
-/// # Panics
-#[allow(unused)]
-pub(crate) async fn run_test_with_cleanup<F, Fut>(
-    name: &str,
-    test_fn: F,
-    directives: Option<&[(&str, &str)]>,
-    clickhouse_conf: Option<&str>,
-) -> Result<(), Box<dyn std::any::Any + Send>>
-where
-    F: FnOnce(Arc<ClickHouseContainer>) -> Fut + Send + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    let disable_cleanup = std::env::var(DISABLE_CLEANUP_ENV)
-        .ok()
-        .is_some_and(|e| e.eq_ignore_ascii_case("true") || e == "1");
-
-    let disable_cleanup_on_error = std::env::var(DISABLE_CLEANUP_ON_ERROR_ENV)
-        .ok()
-        .is_some_and(|e| e.eq_ignore_ascii_case("true") || e == "1");
-
-    // Initialize container and tracing
-    test_utils::init_tracing(directives);
-    let ch = test_utils::create_container(clickhouse_conf).await;
-
-    let result = AssertUnwindSafe(test_fn(Arc::clone(&ch))).catch_unwind().await;
-
-    // Either path will not update TESTS_RUNNING, and will keep containers running
-    if disable_cleanup || (disable_cleanup_on_error && result.is_err()) {
-        if result.is_err() {
-            error!(">>> Exiting test w/o shutdown: {name}");
-        } else {
-            debug!(">>> Exiting test w/o shutdown: {name}");
-        }
-        return result;
-    }
-
-    ch.shutdown().await.expect("Shutting down container");
-
-    result
-}
-
-// TODO: Remove
 #[allow(unused)]
 pub(crate) async fn run_test_with_errors<F, Fut>(
     name: &str,

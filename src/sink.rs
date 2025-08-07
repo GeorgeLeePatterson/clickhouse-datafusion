@@ -1,12 +1,10 @@
 use std::fmt;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::exec_err;
-use datafusion::datasource::sink::DataSink;
-use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::error::Result;
+use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::DisplayAs;
 use datafusion::sql::TableReference;
 use futures_util::StreamExt;
@@ -18,18 +16,31 @@ use crate::connection::ClickHouseConnectionPool;
 /// [`DataSink`] for `ClickHouse` [`datafusion::datasource::TableProvider::insert_into`]
 #[derive(Debug)]
 pub struct ClickHouseDataSink {
-    writer: ClickHouseConnectionPool,
+    #[cfg_attr(feature = "mocks", expect(unused))]
+    writer: Arc<ClickHouseConnectionPool>,
     table:  TableReference,
     schema: SchemaRef,
 }
 
 impl ClickHouseDataSink {
-    pub fn new(writer: ClickHouseConnectionPool, table: TableReference, schema: SchemaRef) -> Self {
+    pub fn new(
+        writer: Arc<ClickHouseConnectionPool>,
+        table: TableReference,
+        schema: SchemaRef,
+    ) -> Self {
         Self { writer, table, schema }
     }
 
-    // It's important that the schemas align, but ordering and metadata don't matter
-    pub(crate) fn verify_input_schema(&self, input: &SchemaRef) -> Result<()> {
+    /// Verify that a passed in schema aligns with the sink schema
+    ///
+    /// Ordering and metadata don't matter
+    ///
+    /// # Errors
+    /// - Returns an error if the field lengths don't match
+    /// - Returns an error if data types don't match
+    /// - Returns an error if names don't match
+    /// - Returns an error if nullability doesn't match
+    pub fn verify_input_schema(&self, input: &SchemaRef) -> Result<()> {
         let sink_fields = self.schema.fields();
         let input_fields = input.fields();
         if sink_fields.len() != input_fields.len() {
@@ -77,8 +88,8 @@ impl DisplayAs for ClickHouseDataSink {
     }
 }
 
-#[async_trait]
-impl DataSink for ClickHouseDataSink {
+#[async_trait::async_trait]
+impl datafusion::datasource::sink::DataSink for ClickHouseDataSink {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
     fn schema(&self) -> &SchemaRef { &self.schema }
@@ -86,8 +97,11 @@ impl DataSink for ClickHouseDataSink {
     async fn write_all(
         &self,
         mut data: SendableRecordBatchStream,
-        _context: &Arc<TaskContext>,
+        _context: &Arc<datafusion::execution::TaskContext>,
     ) -> Result<u64> {
+        #[cfg(not(feature = "mocks"))]
+        use datafusion::error::DataFusionError;
+
         let db = self.table.schema();
         let table = self.table.table();
 
@@ -99,6 +113,7 @@ impl DataSink for ClickHouseDataSink {
 
         let mut row_count = 0;
 
+        #[cfg(not(feature = "mocks"))]
         let pool =
             self.writer.pool().get().await.map_err(|e| DataFusionError::External(Box::new(e)))?;
 
@@ -107,12 +122,18 @@ impl DataSink for ClickHouseDataSink {
             self.verify_input_schema(batch.schema_ref())?;
 
             let num_rows = batch.num_rows();
+
+            #[cfg(not(feature = "mocks"))]
             let mut results = pool
                 .insert(&query, batch, None)
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
+            #[cfg(feature = "mocks")]
+            eprintln!("Mocking query: {query}");
+
             // Drain the result stream to ensure the insert completes
+            #[cfg(not(feature = "mocks"))]
             while let Some(result) = results.next().await {
                 result.map_err(|e| DataFusionError::External(Box::new(e)))?;
             }
@@ -123,4 +144,3 @@ impl DataSink for ClickHouseDataSink {
         Ok(row_count)
     }
 }
-

@@ -1,9 +1,12 @@
-use datafusion::arrow::datatypes::DataType;
-use datafusion::common::plan_err;
+use datafusion::arrow::datatypes::{DataType, FieldRef};
+use datafusion::common::{plan_datafusion_err, plan_err};
 use datafusion::error::Result;
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    Volatility,
 };
+
+use super::udf_field_from_fields;
 
 pub fn placeholder_udf_from_placeholder(placeholder: PlaceholderUDF) -> ScalarUDF {
     ScalarUDF::new_from_impl(placeholder)
@@ -17,37 +20,26 @@ pub fn placeholder_udf_from_placeholder(placeholder: PlaceholderUDF) -> ScalarUD
 /// Placeholder UDF implementation
 #[derive(Debug)]
 pub struct PlaceholderUDF {
-    pub name:        String,
-    pub signature:   Signature,
-    pub return_type: DataType,
+    pub name:      String,
+    pub signature: Signature,
 }
 
 impl PlaceholderUDF {
     pub fn new(name: &str) -> Self {
         Self {
-            name:        name.to_string(),
-            signature:   Signature::variadic_any(Volatility::Immutable),
-            return_type: DataType::Utf8,
+            name:      name.to_string(),
+            signature: Signature::variadic_any(Volatility::Immutable),
         }
     }
 
     #[must_use]
     pub fn with_name(self, name: &str) -> Self {
-        Self {
-            name:        name.to_string(),
-            signature:   self.signature,
-            return_type: self.return_type,
-        }
+        Self { name: name.to_string(), signature: self.signature }
     }
 
     #[must_use]
     pub fn with_signature(self, signature: Signature) -> Self {
-        Self { name: self.name, signature, return_type: self.return_type }
-    }
-
-    #[must_use]
-    pub fn with_return_type(self, return_type: DataType) -> Self {
-        Self { name: self.name, signature: self.signature, return_type }
+        Self { name: self.name, signature }
     }
 }
 
@@ -58,8 +50,22 @@ impl ScalarUDFImpl for PlaceholderUDF {
 
     fn signature(&self) -> &Signature { &self.signature }
 
-    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        Ok(self.return_type.clone())
+    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+        arg_types.last().cloned().ok_or(plan_datafusion_err!(
+            "Placeholder UDF '{}' requires at least one argument",
+            self.name
+        ))
+    }
+
+    fn return_field_from_args(&self, args: ReturnFieldArgs<'_>) -> Result<FieldRef> {
+        if let Ok(ret) = super::extract_return_field_from_args(self.name(), &args) {
+            Ok(ret)
+        } else {
+            let data_types =
+                args.arg_fields.iter().map(|f| f.data_type()).cloned().collect::<Vec<_>>();
+            let return_type = self.return_type(&data_types)?;
+            Ok(udf_field_from_fields(self.name(), return_type, args.arg_fields))
+        }
     }
 
     fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
@@ -71,7 +77,7 @@ impl ScalarUDFImpl for PlaceholderUDF {
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::arrow::datatypes::DataType;
+    use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::logical_expr::{Signature, Volatility};
 
     use super::*;
@@ -80,7 +86,6 @@ mod tests {
     fn test_placeholder_udf_new() {
         let placeholder = PlaceholderUDF::new("test_function");
         assert_eq!(placeholder.name, "test_function");
-        assert_eq!(placeholder.return_type, DataType::Utf8);
 
         // Test that signature is variadic_any
         assert_eq!(
@@ -95,7 +100,6 @@ mod tests {
         let renamed = original.with_name("new_name");
 
         assert_eq!(renamed.name, "new_name");
-        assert_eq!(renamed.return_type, DataType::Utf8);
     }
 
     #[test]
@@ -106,30 +110,15 @@ mod tests {
 
         assert_eq!(updated.name, "test");
         assert_eq!(updated.signature, new_signature);
-        assert_eq!(updated.return_type, DataType::Utf8);
-    }
-
-    #[test]
-    fn test_placeholder_udf_with_return_type() {
-        let original = PlaceholderUDF::new("test");
-        let updated = original.with_return_type(DataType::Int64);
-
-        assert_eq!(updated.name, "test");
-        assert_eq!(updated.return_type, DataType::Int64);
     }
 
     #[test]
     fn test_placeholder_udf_chaining() {
-        let placeholder = PlaceholderUDF::new("original")
-            .with_name("chained")
-            .with_return_type(DataType::Float64)
-            .with_signature(Signature::exact(
-                vec![DataType::Int32, DataType::Utf8],
-                Volatility::Volatile,
-            ));
+        let placeholder = PlaceholderUDF::new("original").with_name("chained").with_signature(
+            Signature::exact(vec![DataType::Int32, DataType::Utf8], Volatility::Volatile),
+        );
 
         assert_eq!(placeholder.name, "chained");
-        assert_eq!(placeholder.return_type, DataType::Float64);
 
         // Verify the signature has exact types
         match &placeholder.signature.type_signature {
@@ -159,26 +148,11 @@ mod tests {
     }
 
     #[test]
-    fn test_scalar_udf_impl_return_type() {
-        let placeholder = PlaceholderUDF::new("test");
-        let result = placeholder.return_type(&[DataType::Int32, DataType::Utf8]);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), DataType::Utf8);
-
-        // Test with custom return type
-        let custom_placeholder = placeholder.with_return_type(DataType::Boolean);
-        let custom_result = custom_placeholder.return_type(&[]);
-        assert!(custom_result.is_ok());
-        assert_eq!(custom_result.unwrap(), DataType::Boolean);
-    }
-
-    #[test]
     fn test_scalar_udf_impl_invoke_with_args_fails() {
         let placeholder = PlaceholderUDF::new("test_function");
 
         // Create empty ScalarFunctionArgs that should cause failure
-        let return_field =
-            Arc::new(datafusion::arrow::datatypes::Field::new("result", DataType::Utf8, true));
+        let return_field = Arc::new(Field::new("result", DataType::Utf8, true));
         let args =
             ScalarFunctionArgs { args: vec![], number_rows: 0, arg_fields: vec![], return_field };
 

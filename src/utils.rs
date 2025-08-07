@@ -20,32 +20,52 @@ pub fn register_builtins(ctx: &SessionContext) {
     super::udfs::register_clickhouse_functions(ctx);
 }
 
-pub mod provider {
-    use std::sync::Arc;
+pub mod analyze {
+    use std::collections::HashMap;
 
-    use datafusion::catalog::TableProvider;
+    use datafusion::common::tree_node::{
+        Transformed, TransformedResult, TreeNode, TreeNodeRecursion,
+    };
+    use datafusion::common::{Column, qualified_name};
+    use datafusion::logical_expr::SubqueryAlias;
+    use datafusion::prelude::Expr;
 
-    use crate::ClickHouseTableProvider;
+    /// Helper function to rewrite exprs, replacing any subquery alias references with the table
+    /// references of its input.
+    ///
+    /// # Panics
+    /// - Does not panic, no error is returned during traversal transformation
+    pub fn push_exprs_below_subquery(
+        exprs: Vec<Expr>,
+        subquery_alias: &SubqueryAlias,
+    ) -> Vec<Expr> {
+        let mut replace_map = HashMap::new();
+        for (i, (qualifier, field)) in subquery_alias.input.schema().iter().enumerate() {
+            let (sub_qualifier, sub_field) = subquery_alias.schema.qualified_field(i);
+            drop(replace_map.insert(
+                qualified_name(sub_qualifier, sub_field.name()),
+                Expr::Column(Column::new(qualifier.cloned(), field.name())),
+            ));
+        }
 
-    /// Helper function to extract a `ClickHouseTableProvider` from a `dyn TableProvider`.
-    #[cfg(feature = "federation")]
-    pub fn extract_clickhouse_provider(
-        provider: &Arc<dyn TableProvider>,
-    ) -> Option<&ClickHouseTableProvider> {
-        let fed_provider = provider
-            .as_any()
-            .downcast_ref::<datafusion_federation::FederatedTableProviderAdaptor>()?;
-        fed_provider
-            .table_provider
-            .as_ref()
-            .and_then(|p| p.as_any().downcast_ref::<ClickHouseTableProvider>())
-    }
-
-    /// Helper function to extract a `ClickHouseTableProvider` from a `dyn TableProvider`.
-    #[cfg(not(feature = "federation"))]
-    pub fn extract_clickhouse_provider(
-        provider: &Arc<dyn TableProvider>,
-    ) -> Option<&ClickHouseTableProvider> {
-        provider.as_any().downcast_ref::<ClickHouseTableProvider>()
+        exprs
+            .into_iter()
+            .map(|expr| {
+                expr.transform_up(|e| {
+                    Ok(if let Expr::Column(c) = &e {
+                        replace_map
+                            .get(&c.flat_name())
+                            .map(|new_c| {
+                                Transformed::new(new_c.clone(), true, TreeNodeRecursion::Jump)
+                            })
+                            .unwrap_or(Transformed::no(e))
+                    } else {
+                        Transformed::no(e)
+                    })
+                })
+                .data()
+                .unwrap()
+            })
+            .collect()
     }
 }

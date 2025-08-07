@@ -8,10 +8,11 @@ use datafusion::sql::sqlparser::{ast, dialect};
 use datafusion::sql::unparser::Unparser;
 use datafusion::sql::unparser::dialect::Dialect as UnparserDialect;
 
-use crate::udfs::simple::CLICKHOUSE_FUNC_ALIASES;
+use crate::udfs::apply::ClickHouseApplyRewriter;
+use crate::udfs::clickhouse::CLICKHOUSE_UDF_ALIASES;
+use crate::udfs::eval::CLICKHOUSE_EVAL_UDF_ALIASES;
 
-// TODO: Docs - where is this used?
-//
+// TODO: Docs
 /// A custom [`UnparserDialect`] for `ClickHouse`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClickHouseDialect;
@@ -21,11 +22,25 @@ impl UnparserDialect for ClickHouseDialect {
 
     fn scalar_function_to_sql_overrides(
         &self,
-        _unparser: &Unparser<'_>,
+        unparser: &Unparser<'_>,
         func_name: &str,
         args: &[Expr],
     ) -> Result<Option<ast::Expr>> {
-        if CLICKHOUSE_FUNC_ALIASES.contains(&func_name) {
+        // First check for pushdown/lambda UDFs
+        if CLICKHOUSE_UDF_ALIASES.contains(&func_name) {
+            let Some(inner_expr) = args.first() else {
+                return plan_err!("`clickhouse` expects a first argument, no arg provided");
+            };
+
+            // If the inner expression is a "lambda" or "HOF", attempt to rewrite it
+            if let Ok(rewriter) = ClickHouseApplyRewriter::try_new(inner_expr) {
+                rewriter.rewrite_to_ast(unparser).map(Some)
+            } else {
+                unparser.expr_to_sql(inner_expr).map(Some)
+            }
+
+        // Then check for eval UDFs
+        } else if CLICKHOUSE_EVAL_UDF_ALIASES.contains(&func_name) {
             if let Some(Expr::Literal(
                 ScalarValue::Utf8(Some(s))
                 | ScalarValue::Utf8View(Some(s))
@@ -34,7 +49,7 @@ impl UnparserDialect for ClickHouseDialect {
             )) = args.first()
             {
                 if s.is_empty() {
-                    return plan_err!("`clickhouse` syntax argument cannot be empty");
+                    return plan_err!("`clickhouse_eval` syntax argument cannot be empty");
                 }
 
                 // Tokenize the string with ClickHouseDialect
@@ -49,10 +64,12 @@ impl UnparserDialect for ClickHouseDialect {
                 })?))
             } else {
                 plan_err!(
-                    "`clickhouse` expects a string literal syntax argument, found: {:?}",
-                    args[0]
+                    "`clickhouse_eval` expects a string literal syntax argument, found: {:?}",
+                    args.first()
                 )
             }
+
+        // No relevant functions
         } else {
             Ok(None)
         }
@@ -74,73 +91,73 @@ mod tests {
     }
 
     #[test]
-    fn test_scalar_function_to_sql_overrides_clickhouse_func() {
+    fn test_scalar_function_to_sql_overrides_clickhouse_eval() {
         let dialect = ClickHouseDialect;
         let unparser = Unparser::new(&dialect);
 
-        // Test valid clickhouse_func function with string literal
+        // Test valid clickhouse_eval function with string literal
         let args = vec![Expr::Literal(ScalarValue::Utf8(Some("count()".to_string())), None)];
-        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_func", &args);
+        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_eval", &args);
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
     }
 
     #[test]
-    fn test_scalar_function_to_sql_overrides_clickhouse_func_utf8view() {
+    fn test_scalar_function_to_sql_overrides_clickhouse_eval_utf8view() {
         let dialect = ClickHouseDialect;
         let unparser = Unparser::new(&dialect);
 
         // Test with Utf8View
         let args = vec![Expr::Literal(ScalarValue::Utf8View(Some("sum(x)".to_string())), None)];
-        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_func", &args);
+        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_eval", &args);
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
     }
 
     #[test]
-    fn test_scalar_function_to_sql_overrides_clickhouse_func_large_utf8() {
+    fn test_scalar_function_to_sql_overrides_clickhouse_eval_large_utf8() {
         let dialect = ClickHouseDialect;
         let unparser = Unparser::new(&dialect);
 
         // Test with LargeUtf8
         let args = vec![Expr::Literal(ScalarValue::LargeUtf8(Some("avg(y)".to_string())), None)];
-        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_func", &args);
+        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_eval", &args);
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
     }
 
     #[test]
-    fn test_scalar_function_to_sql_overrides_clickhouse_func_empty_string() {
+    fn test_scalar_function_to_sql_overrides_clickhouse_eval_empty_string() {
         let dialect = ClickHouseDialect;
         let unparser = Unparser::new(&dialect);
 
         // Test empty string should return error
         let args = vec![Expr::Literal(ScalarValue::Utf8(Some(String::new())), None)];
-        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_func", &args);
+        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_eval", &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
     }
 
     #[test]
-    fn test_scalar_function_to_sql_overrides_clickhouse_func_invalid_arg() {
+    fn test_scalar_function_to_sql_overrides_clickhouse_eval_invalid_arg() {
         let dialect = ClickHouseDialect;
         let unparser = Unparser::new(&dialect);
 
         // Test non-string literal should return error
         let args = vec![Expr::Literal(ScalarValue::Int32(Some(42)), None)];
-        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_func", &args);
+        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_eval", &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("expects a string literal"));
     }
 
     #[test]
-    fn test_scalar_function_to_sql_overrides_clickhouse_func_invalid_syntax() {
+    fn test_scalar_function_to_sql_overrides_clickhouse_eval_invalid_syntax() {
         let dialect = ClickHouseDialect;
         let unparser = Unparser::new(&dialect);
 
         // Test invalid ClickHouse syntax - should actually fail parsing
         let args = vec![Expr::Literal(ScalarValue::Utf8(Some("invalid(((".to_string())), None)];
-        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_func", &args);
+        let result = dialect.scalar_function_to_sql_overrides(&unparser, "clickhouse_eval", &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid ClickHouse expression"));
     }

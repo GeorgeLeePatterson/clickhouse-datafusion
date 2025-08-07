@@ -278,9 +278,10 @@ pub fn params_to_pool_builder<S: ::std::hash::BuildHasher>(
                 .with_arrow_options(arrow_options)
                 .with_settings(settings.unwrap_or_default());
             #[cfg(feature = "cloud")]
-            let bulder = builder.with_cloud_wakeup(cloud_wakeup);
+            let builder = builder.with_cloud_wakeup(cloud_wakeup);
             #[cfg(feature = "cloud")]
-            let bulider = cloud_timeout.map(|to| builder.with_cloud_timeout(to)).unwrap_or(builder);
+            let builder =
+                if let Some(to) = cloud_timeout { builder.with_cloud_timeout(to) } else { builder };
             let builder =
                 if let Some(domain) = domain { builder.with_domain(domain) } else { builder };
             if let Some(cafile) = cafile { builder.with_cafile(cafile) } else { builder }

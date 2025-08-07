@@ -11,7 +11,7 @@ homepage = "https://github.com/georgeleepatterson/clickhouse-datafusion"
 documentation = "https://docs.rs/clickhouse-datafusion"
 
 [features]
-default = ["federation"]
+default = []
 # Federation through the `datafusion-federation` crate.
 federation = ["dep:datafusion-federation"]
 # Supports passing additional cloud-specific params during Catalog creation to the underlying client
@@ -20,14 +20,17 @@ cloud = ["clickhouse-arrow/cloud"]
 # For testing and examples
 test-utils = [
     "clickhouse-arrow/test-utils",
-    "dep:tokio"
+    "dep:tokio",
 ]
+mocks = [] # Used for unit tests and connection mocking
 
 [dependencies]
 async-trait = "0.1"
 clickhouse-arrow = { version = "0.1" }
 dashmap = "6"
-datafusion = { version = "49" }
+# TODO: Remove
+# datafusion = { path = "../datafusion/datafusion/core" }
+datafusion = "49"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 pin-project = "1"
@@ -43,6 +46,8 @@ tokio = { version = "1", features = ["sync", "rt", "macros"], optional = true }
 # TODO: Remove this when upstream PR has been merged
 # ref: [PR #135](https://github.com/datafusion-contrib/datafusion-federation/pull/135)
 [dependencies.datafusion-federation]
+# TODO: Remove
+# path = "../datafusion-federation/datafusion-federation"
 git = "https://github.com/GeorgeLeePatterson/datafusion-federation"
 branch = "fix-unnest-with-new-exprs"
 features = ["sql"]

@@ -10,11 +10,10 @@ use datafusion::error::Result;
 use datafusion::logical_expr::CreateExternalTable;
 use datafusion::sql::TableReference;
 use parking_lot::Mutex;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use crate::connection::ClickHouseConnectionPool;
-use crate::utils::DEFAULT_DATABASE_PARAM;
-use crate::{ClickHouseTableProvider, utils};
+use crate::providers::table::ClickHouseTableProvider;
 
 // TODO: Docs - especially explain the different ways to use this, the fact that it exists since it
 // wraps a `ClickHouseConnectionPool`, and how to use it with a `ClickHouseConnectionPoolBuilder`.
@@ -23,13 +22,21 @@ use crate::{ClickHouseTableProvider, utils};
 ///
 /// Returns a federated table provider if the `federation` feature is enabled, otherwise a
 /// [`TableProvider`]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClickHouseTableFactory {
-    pool: ClickHouseConnectionPool,
+    pool:          Arc<ClickHouseConnectionPool>,
+    coerce_schema: bool,
 }
 
 impl ClickHouseTableFactory {
-    pub fn new(pool: ClickHouseConnectionPool) -> Self { Self { pool } }
+    pub fn new(pool: Arc<ClickHouseConnectionPool>) -> Self { Self { pool, coerce_schema: false } }
+
+    /// Set whether to coerce the schema of the table provider.
+    #[must_use]
+    pub fn with_coercion(mut self, coerce_schema: bool) -> Self {
+        self.coerce_schema = coerce_schema;
+        self
+    }
 
     /// # Errors
     /// - Returns an error if the table provider cannot be created.
@@ -37,13 +44,14 @@ impl ClickHouseTableFactory {
         &self,
         table_reference: TableReference,
     ) -> Result<Arc<dyn TableProvider + 'static>> {
-        let pool = self.pool.clone();
+        let pool = Arc::clone(&self.pool);
         debug!(%table_reference, "Creating ClickHouse table provider");
 
         let provider = Arc::new(
             ClickHouseTableProvider::try_new(pool, table_reference)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                .with_coercion(self.coerce_schema),
         );
 
         #[cfg(feature = "federation")]
@@ -63,11 +71,14 @@ impl ClickHouseTableFactory {
         schema: SchemaRef,
     ) -> Arc<dyn TableProvider + 'static> {
         debug!(%table_reference, "Creating ClickHouse table provider from schema");
-        let provider = Arc::new(ClickHouseTableProvider::new_with_schema(
-            self.pool.clone(),
-            table_reference,
-            schema,
-        ));
+        let provider = Arc::new(
+            ClickHouseTableProvider::new_with_schema_unchecked(
+                Arc::clone(&self.pool),
+                table_reference,
+                schema,
+            )
+            .with_coercion(self.coerce_schema),
+        );
         #[cfg(feature = "federation")]
         let provider = Arc::new(provider.create_federated_table_provider());
         provider
@@ -75,14 +86,29 @@ impl ClickHouseTableFactory {
 }
 
 /// A `DataFusion` [`TableProviderFactory`] for creating `ClickHouse` tables.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClickHouseTableProviderFactory {
-    pools: Arc<Mutex<HashMap<Destination, ClickHouseConnectionPool>>>,
+    pools:          Arc<Mutex<HashMap<Destination, ClickHouseConnectionPool>>>,
+    coerce_schemas: bool,
 }
 
 impl ClickHouseTableProviderFactory {
-    pub fn new() -> Self { Self { pools: Arc::new(Mutex::new(HashMap::default())) } }
+    pub fn new() -> Self {
+        Self { pools: Arc::new(Mutex::new(HashMap::default())), coerce_schemas: false }
+    }
 
+    /// Set whether [`ClickHouseTableProvider`]s should attempt to coerce `RecordBatch` schemas to
+    /// the schema of the `LogicalPlan` being executed.
+    #[must_use]
+    pub fn with_coercion(mut self, coerce: bool) -> Self {
+        self.coerce_schemas = coerce;
+        self
+    }
+
+    pub fn coerce_schemas(&self) -> bool { self.coerce_schemas }
+}
+
+impl ClickHouseTableProviderFactory {
     // TODO: Docs
     /// # Errors
     /// - Returns an error if creating the `ClickHouseConnectionPool` fails.
@@ -115,6 +141,7 @@ impl ClickHouseTableProviderFactory {
         // Create connection pool
         let pool = ClickHouseConnectionPool::from_pool_builder(builder).await?;
         debug!(?endpoint, "Connection pool created successfully");
+
         // Update map
         drop(self.pools.lock().insert(endpoint, pool.clone()));
         Ok(pool)
@@ -131,7 +158,7 @@ impl ClickHouseTableProviderFactory {
         params: &mut HashMap<String, String>,
     ) -> Result<ClickHouseConnectionPool> {
         if endpoint.is_empty() {
-            error!("Endpoint is required for ClickHouse, received empty value");
+            tracing::error!("Endpoint is required for ClickHouse, received empty value");
             return exec_err!("Endpoint is required for ClickHouse");
         }
 
@@ -144,7 +171,7 @@ impl ClickHouseTableProviderFactory {
         // Parse options (e.g., host, port, database)
         // NOTE: Settings are ignored since this path is for creating tables and settings will be
         // delegated to table creation
-        let clickhouse_options = utils::params_to_pool_builder(endpoint, params, true)?;
+        let clickhouse_options = crate::utils::params_to_pool_builder(endpoint, params, true)?;
 
         // Create connection pool
         self.attach_pool_builder(destination, clickhouse_options).await
@@ -177,15 +204,16 @@ impl TableProviderFactory for ClickHouseTableProviderFactory {
         // Pull out database
         let database = name
             .schema()
-            .or(params.get(DEFAULT_DATABASE_PARAM).map(String::as_str))
+            .or(params.get(crate::utils::DEFAULT_DATABASE_PARAM).map(String::as_str))
             .unwrap_or("default")
             .to_string();
 
         // Get or create a clickhouse connection pool
-        let pool = self
-            .get_or_create_pool_from_params(&endpoint, &mut params)
-            .await
-            .inspect_err(|error| error!(?error, "Failed to create connection pool"))?;
+        let pool = Arc::new(
+            self.get_or_create_pool_from_params(&endpoint, &mut params)
+                .await
+                .inspect_err(|error| tracing::error!(?error, "Failed to create connection pool"))?,
+        );
 
         // Ensure table reference is properly formatted
         let name = match name {
@@ -195,21 +223,25 @@ impl TableProviderFactory for ClickHouseTableProviderFactory {
         };
 
         debug!(?name, "Table provider factory creating schema");
+        // Get table options
+        let column_defaults = &cmd.column_defaults;
+        let create_options =
+            crate::utils::params::params_to_create_options(&mut params, column_defaults)
+                .inspect_err(|error| {
+                    tracing::error!(
+                        ?error,
+                        ?params,
+                        "Could not generate table options from params"
+                    );
+                })?;
 
-        // DDL
-        {
-            // Get table options
-            let column_defaults = &cmd.column_defaults;
-            let create_options =
-                utils::params::params_to_create_options(&mut params, column_defaults).inspect_err(
-                    |error| error!(?error, ?params, "Could not generate table options from params"),
-                )?;
-
-            // Create table and optionally database
-            utils::create_schema(&name, &schema, &create_options, &pool, cmd.if_not_exists).await?;
-        }
+        // Create table and optionally database
+        crate::utils::create_schema(&name, &schema, &create_options, &pool, cmd.if_not_exists)
+            .await?;
 
         // Create table provider
-        Ok(ClickHouseTableFactory::new(pool).table_provider_from_schema(name, schema))
+        Ok(ClickHouseTableFactory::new(pool)
+            .with_coercion(self.coerce_schemas)
+            .table_provider_from_schema(name, schema))
     }
 }

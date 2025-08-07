@@ -2,13 +2,15 @@ use std::any::Any;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
+use datafusion::arrow::datatypes::{DataType, FieldRef};
 use datafusion::common::{ScalarValue, internal_err, not_impl_err, plan_datafusion_err, plan_err};
 use datafusion::error::Result;
 use datafusion::logical_expr::{
     ColumnarValue, DocSection, Documentation, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDF,
     ScalarUDFImpl, Signature, Volatility,
 };
+
+use super::udf_field_from_fields;
 
 static DOCUMENTATION: LazyLock<Documentation> = LazyLock::new(|| {
     Documentation::builder(DocSection::default(), "Add one to an int32", "add_one(2)")
@@ -17,9 +19,9 @@ static DOCUMENTATION: LazyLock<Documentation> = LazyLock::new(|| {
         .build()
 });
 
-pub const CLICKHOUSE_FUNC_ALIASES: &[&str] = &["clickhousefunc", "clickhouse_func"];
+pub const CLICKHOUSE_EVAL_UDF_ALIASES: &[&str] = &["clickhouse_eval"];
 
-pub fn clickhouse_func_udf() -> ScalarUDF { ScalarUDF::from(ClickHouseFunc::new()) }
+pub fn clickhouse_eval_udf() -> ScalarUDF { ScalarUDF::from(ClickHouseEval::new()) }
 
 fn get_doc() -> &'static Documentation { &DOCUMENTATION }
 
@@ -29,16 +31,16 @@ fn get_doc() -> &'static Documentation { &DOCUMENTATION }
 /// [`ClickHouseFunc`] is an escape hatch to pass syntax that `DataFusion` does not support directly
 /// to `ClickHouse`.
 #[derive(Debug)]
-pub struct ClickHouseFunc {
+pub struct ClickHouseEval {
     signature: Signature,
     aliases:   Vec<String>,
 }
 
-impl Default for ClickHouseFunc {
+impl Default for ClickHouseEval {
     fn default() -> Self { Self::new() }
 }
 
-impl ClickHouseFunc {
+impl ClickHouseEval {
     pub const ARG_LEN: usize = 2;
 
     pub fn new() -> Self {
@@ -48,15 +50,15 @@ impl ClickHouseFunc {
                 vec![DataType::Utf8, DataType::Utf8View, DataType::LargeUtf8],
                 Volatility::Volatile,
             ),
-            aliases:   CLICKHOUSE_FUNC_ALIASES.iter().map(ToString::to_string).collect(),
+            aliases:   CLICKHOUSE_EVAL_UDF_ALIASES.iter().map(ToString::to_string).collect(),
         }
     }
 }
 
-impl ScalarUDFImpl for ClickHouseFunc {
+impl ScalarUDFImpl for ClickHouseEval {
     fn as_any(&self) -> &dyn Any { self }
 
-    fn name(&self) -> &'static str { "clickhouse_func" }
+    fn name(&self) -> &'static str { CLICKHOUSE_EVAL_UDF_ALIASES[0] }
 
     fn aliases(&self) -> &[String] { &self.aliases }
 
@@ -68,7 +70,7 @@ impl ScalarUDFImpl for ClickHouseFunc {
     /// # Panics
     /// Unwrap is used but it's guarded by a bounds check.
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        if arg_types.len() != 2 || arg_types.len() != 2 {
+        if arg_types.len() != 2 {
             return plan_err!(
                 "Expected two string arguments, syntax and datatype, received fields {:?}",
                 arg_types
@@ -126,8 +128,7 @@ impl ScalarUDFImpl for ClickHouseFunc {
             // Parse type string to DataType
             let data_type = DataType::from_str(type_str)
                 .map_err(|e| plan_datafusion_err!("Invalid type string: {e}"))?;
-
-            Ok(Field::new(self.name(), data_type, true).into())
+            Ok(udf_field_from_fields(self.name(), data_type, args.arg_fields))
         } else {
             internal_err!("clickhouse_func expects string arguments")
         }
@@ -153,33 +154,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_clickhouse_func_new() {
-        let func = ClickHouseFunc::new();
-        assert_eq!(func.name(), "clickhouse_func");
-        assert_eq!(func.aliases(), &["clickhousefunc", "clickhouse_func"]);
+    fn test_clickhouse_eval_new() {
+        let func = ClickHouseEval::new();
+        assert_eq!(func.name(), CLICKHOUSE_EVAL_UDF_ALIASES[0]);
+        assert_eq!(func.aliases(), CLICKHOUSE_EVAL_UDF_ALIASES);
     }
 
     #[test]
-    fn test_clickhouse_func_default() {
-        let func = ClickHouseFunc::default();
-        assert_eq!(func.name(), "clickhouse_func");
+    fn test_clickhouse_eval_default() {
+        let func = ClickHouseEval::default();
+        assert_eq!(func.name(), CLICKHOUSE_EVAL_UDF_ALIASES[0]);
     }
 
     #[test]
     fn test_clickhouse_func_constants() {
-        assert_eq!(ClickHouseFunc::ARG_LEN, 2);
-        assert_eq!(CLICKHOUSE_FUNC_ALIASES, &["clickhousefunc", "clickhouse_func"]);
+        assert_eq!(ClickHouseEval::ARG_LEN, 2);
     }
 
     #[test]
-    fn test_clickhouse_func_udf_creation() {
-        let udf = clickhouse_func_udf();
-        assert_eq!(udf.name(), "clickhouse_func");
+    fn test_clickhouse_eval_udf_creation() {
+        let udf = clickhouse_eval_udf();
+        assert_eq!(udf.name(), CLICKHOUSE_EVAL_UDF_ALIASES[0]);
     }
 
     #[test]
     fn test_return_type_valid_args() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let arg_types = vec![DataType::Utf8, DataType::Int32];
         let result = func.return_type(&arg_types);
         assert!(result.is_ok());
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_return_type_valid_args_utf8_view() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let arg_types = vec![DataType::Utf8View, DataType::Float64];
         let result = func.return_type(&arg_types);
         assert!(result.is_ok());
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_return_type_valid_args_large_utf8() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let arg_types = vec![DataType::LargeUtf8, DataType::Boolean];
         let result = func.return_type(&arg_types);
         assert!(result.is_ok());
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_return_type_wrong_arg_count() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
 
         // Too few arguments
         let arg_types = vec![DataType::Utf8];
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_valid() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
         let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
         let scalar = [
@@ -238,14 +238,14 @@ mod tests {
         let result = func.return_field_from_args(args);
         assert!(result.is_ok());
         let field = result.unwrap();
-        assert_eq!(field.name(), "clickhouse_func");
+        assert_eq!(field.name(), CLICKHOUSE_EVAL_UDF_ALIASES[0]);
         assert_eq!(field.data_type(), &DataType::Int64);
-        assert!(field.is_nullable());
+        assert!(!field.is_nullable(), "Expect non-nullable - no nullable input fields");
     }
 
     #[test]
     fn test_return_field_from_args_utf8_view() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Utf8View, false));
         let field2 = Arc::new(Field::new("type", DataType::Utf8View, false));
         let scalar = [
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_large_utf8() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::LargeUtf8, false));
         let field2 = Arc::new(Field::new("type", DataType::LargeUtf8, false));
 
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_wrong_field_count() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
         let scalar = [Some(ScalarValue::Utf8(Some("count()".to_string())))];
         let args = ReturnFieldArgs {
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_wrong_scalar_count() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
         let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
         let scalar = [Some(ScalarValue::Utf8(Some("count()".to_string())))];
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_missing_syntax() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
         let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
         let scalar = [None, Some(ScalarValue::Utf8(Some("Int64".to_string())))];
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_missing_type() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
         let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
         let scalar = [Some(ScalarValue::Utf8(Some("count()".to_string()))), None];
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_null_syntax() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
         let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
         let scalar =
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_null_type() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
         let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
         let scalar =
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_invalid_type_string() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Utf8, false));
         let field2 = Arc::new(Field::new("type", DataType::Utf8, false));
         let scalar = [
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_return_field_from_args_non_string_arguments() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let field1 = Arc::new(Field::new("syntax", DataType::Int32, false));
         let field2 = Arc::new(Field::new("type", DataType::Int32, false));
         let scalar = [Some(ScalarValue::Int32(Some(42))), Some(ScalarValue::Int32(Some(24)))];
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_invoke_with_args_not_implemented() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let args = ScalarFunctionArgs {
             args:         vec![],
             arg_fields:   vec![],
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_documentation() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let doc = func.documentation();
         assert!(doc.is_some());
 
@@ -449,15 +449,15 @@ mod tests {
 
     #[test]
     fn test_as_any() {
-        let func = ClickHouseFunc::new();
+        let func = ClickHouseEval::new();
         let any_ref = func.as_any();
-        assert!(any_ref.downcast_ref::<ClickHouseFunc>().is_some());
+        assert!(any_ref.downcast_ref::<ClickHouseEval>().is_some());
     }
 
     #[tokio::test]
     async fn test_clickhouse_udf() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = SessionContext::new();
-        ctx.register_udf(clickhouse_func_udf());
+        ctx.register_udf(clickhouse_eval_udf());
 
         let schema = SchemaRef::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -473,7 +473,7 @@ mod tests {
             ]])?);
         drop(ctx.register_table("people", provider)?);
         let sql =
-            "SELECT id, clickhousefunc('splitByChar('','', names)', 'List(Utf8)') FROM people";
+            "SELECT id, clickhouse_eval('splitByChar('','', names)', 'List(Utf8)') FROM people";
         let df = ctx.sql(&format!("EXPLAIN {sql}")).await?;
         let results = df.collect().await?;
         println!("EXPLAIN: {results:?}");

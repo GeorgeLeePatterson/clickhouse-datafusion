@@ -1,3 +1,36 @@
+//! The various builders to make registering, updating, and synching remove `ClickHouse` databases
+//! and `DataFusion` easier.
+//!
+//! # `ClickHouseBuilder`
+//!
+//! You begin by creating a `ClickHouseBuilder` instance, which allows you to configure various
+//! aspects of the integration, such as the endpoint, authentication, the underlying `ClickHouse`
+//! connection pool, `clickhouse-arrow` `Client` options, schema mapping, and more.
+//!
+//! ## Schema Coercion
+//!
+//! You can also specify whether "schema coercion" should occur. If using the full
+//! [`super::context::ClickHouseSessionContext`] and [`super::context::ClickHouseQueryPlanner`],
+//! required if you plan on using `ClickHouse` functions, then the return type provided to the
+//! second argument of the `clickhouse(...)` scalar UDF will specify the expected return type.
+//!
+//! This means you must be exact, otherwise an arrow error will be returned. By configuring schema
+//! coercion, anything that can be coerced via arrow will be coerced, based on the expected schema
+//! of the clickhouse function mentioned above.
+//!
+//! Generally this should be avoided, as there is a cost. The cost is incurred during execution,
+//! which means it can have a per `RecordBatch` cost that can be avoided simply by providing the
+//! correct return type to the clickhouse function.
+//!
+//! # `ClickHouseCatalogBuilder`
+//!
+//! Once configured, `ClickHouseCatalogBuilder` can be obtained by calling
+//! `ClickHouseBuilder::build_catalog`. The return of this, the `ClickHouseCatalogBuilder`, can be
+//! used to create tables on the remote schema, register existing tables under aliases, and refresh
+//! `DataFusion`'s internal catalog to keep the two in sync.
+//!
+//! Refer to e2e tests in the repository for detailed examples on its usage, especially the
+//! associated "helper" functions.
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -16,9 +49,10 @@ use datafusion::sql::TableReference;
 use tracing::{debug, error};
 
 use crate::connection::ClickHouseConnectionPool;
+use crate::providers::catalog::ClickHouseCatalogProvider;
+use crate::providers::table_factory::ClickHouseTableFactory;
 use crate::table_factory::ClickHouseTableProviderFactory;
 use crate::utils::{self, ENDPOINT_PARAM, default_str_to_expr, register_builtins};
-use crate::{ClickHouseCatalogProvider, ClickHouseTableFactory};
 
 /// The default `DataFusion` catalog name if no other name is provided.
 pub const DEFAULT_CLICKHOUSE_CATALOG: &str = "clickhouse";
@@ -39,7 +73,7 @@ pub fn default_arrow_options() -> ArrowOptions {
 pub struct ClickHouseBuilder {
     endpoint:     Destination,
     pool_builder: ArrowConnectionPoolBuilder,
-    factory:      Arc<ClickHouseTableProviderFactory>,
+    factory:      ClickHouseTableProviderFactory,
 }
 
 impl ClickHouseBuilder {
@@ -55,7 +89,7 @@ impl ClickHouseBuilder {
         let endpoint = endpoint.into();
         let pool_builder = ArrowConnectionPoolBuilder::new(endpoint.clone())
             .configure_client(|c| c.with_arrow_options(default_arrow_options()));
-        Self { endpoint, pool_builder, factory: Arc::new(ClickHouseTableProviderFactory::new()) }
+        Self { endpoint, pool_builder, factory: ClickHouseTableProviderFactory::new() }
     }
 
     pub fn new_with_pool_builder(
@@ -63,11 +97,19 @@ impl ClickHouseBuilder {
         pool_builder: ArrowConnectionPoolBuilder,
     ) -> Self {
         let endpoint = endpoint.into();
-        Self { endpoint, pool_builder, factory: Arc::new(ClickHouseTableProviderFactory::new()) }
+        Self { endpoint, pool_builder, factory: ClickHouseTableProviderFactory::new() }
+    }
+
+    /// Configure whether to coerce schemas to match expected schemas during query execution.
+    /// Remember, there is a non-zero cost incurred per `RecordBatch`, and this is mainly useful for
+    /// allowing looser return types when using clickhouse functions.
+    #[must_use]
+    pub fn with_coercion(mut self, coerce: bool) -> Self {
+        self.factory = self.factory.with_coercion(coerce);
+        self
     }
 
     // TODO: Docs - also link to documentation on clickhouse-arrow
-    //
     /// Configure the underlying [`clickhouse_arrow::ClientBuilder`].
     #[must_use]
     pub fn configure_client(mut self, f: impl FnOnce(ClientBuilder) -> ClientBuilder) -> Self {
@@ -98,14 +140,6 @@ impl ClickHouseBuilder {
         self
     }
 
-    // TODO: Docs - why would I do this?
-    /// Sets the factory for the `ClickHouse` table provider.
-    #[must_use]
-    pub fn factory(mut self, factory: Arc<ClickHouseTableProviderFactory>) -> Self {
-        self.factory = factory;
-        self
-    }
-
     // TODO: Docs - also mention how this is the only way to construct a ClickHouseCatalogBuilder
     //
     /// Build ensures `ClickHouse` builtins are registered (such as nested functions), the pool is
@@ -120,7 +154,7 @@ impl ClickHouseBuilder {
         ctx: &SessionContext,
         catalog: Option<&str>,
     ) -> Result<ClickHouseCatalogBuilder> {
-        // Register built in functions and "simple" clickhouse udf
+        // Register built in functions and clickhouse udfs
         register_builtins(ctx);
 
         let catalog = catalog.unwrap_or(DEFAULT_CLICKHOUSE_CATALOG).to_string();
@@ -129,22 +163,34 @@ impl ClickHouseBuilder {
 
         let endpoint = self.endpoint.to_string();
         let factory = self.factory;
-        let pool = factory.attach_pool_builder(self.endpoint, self.pool_builder).await?;
+        let pool = Arc::new(factory.attach_pool_builder(self.endpoint, self.pool_builder).await?);
 
         ClickHouseCatalogBuilder::try_new(ctx, catalog, database, endpoint, pool, factory).await
     }
 }
 
-/// [`ClickHouseCatalogBuilder`] can be used to create tables, register existing tables, register
-/// "external" tables (external to `ClickHouse`), and finally register the `ClickHouse` catalog,
-/// providing federation if desired.
+/// [`ClickHouseCatalogBuilder`] can be used to create tables, register existing tables, and finally
+/// refresh the `ClickHouse` catalog in `DataFusion`.
+///
+/// IMPORTANT! After creating tables, one of the build variations, ie `Self::build` or
+/// `Self::build_schema`, must be called to ensure the catalog provider is up to date with the
+/// remote `ClickHouse` database. If you forget to do this, `DataFusion` queries targeting one of
+/// these tables will fail.
 #[derive(Clone)]
 pub struct ClickHouseCatalogBuilder {
     catalog:  String,
+    /// The current schema the builder is targeting.
     schema:   String,
+    /// The configured remote endpoint the underlying `ClickHouse` pool is connected.
     endpoint: String,
-    pool:     ClickHouseConnectionPool,
-    factory:  Arc<ClickHouseTableProviderFactory>,
+    /// The `ClickHouse` connection used to communicate with the remote `ClickHouse` database.
+    pool:     Arc<ClickHouseConnectionPool>,
+    /// This factory is used to create new tables in the remote `ClickHouse` database. This builder
+    /// must be built with one of the builder variations, ie `Self::build` or `Self::build_schema`,
+    /// so that the provider reflects the most current remote schema.
+    factory:  ClickHouseTableProviderFactory,
+    /// The catalog provider is a passive catalog provider, meaning it must be "refreshed" after
+    /// table creation or schema change of any type to the remove `ClickHouse` database.
     provider: Arc<ClickHouseCatalogProvider>,
 }
 
@@ -156,8 +202,8 @@ impl ClickHouseCatalogBuilder {
         catalog: impl Into<String>,
         default_schema: impl Into<String>,
         endpoint: impl Into<String>,
-        pool: ClickHouseConnectionPool,
-        factory: Arc<ClickHouseTableProviderFactory>,
+        pool: Arc<ClickHouseConnectionPool>,
+        factory: ClickHouseTableProviderFactory,
     ) -> Result<Self> {
         let schema = default_schema.into();
         let catalog = catalog.into();
@@ -173,11 +219,15 @@ impl ClickHouseCatalogBuilder {
         }
 
         // Register catalog or create a new one
-        let provider = Arc::new(
-            ClickHouseCatalogProvider::try_new(pool.clone())
-                .await
-                .inspect_err(|error| error!(?error, "Failed to register catalog {catalog}"))?,
-        );
+        let provider = if factory.coerce_schemas() {
+            ClickHouseCatalogProvider::try_new_with_coercion(Arc::clone(&pool)).await
+        } else {
+            ClickHouseCatalogProvider::try_new(Arc::clone(&pool)).await
+        }
+        .inspect_err(|error| error!(?error, "Failed to register catalog {catalog}"))?;
+
+        let provider = Arc::new(provider);
+
         drop(
             ctx.register_catalog(
                 catalog.as_str(),
@@ -188,18 +238,18 @@ impl ClickHouseCatalogBuilder {
         Ok(ClickHouseCatalogBuilder { catalog, schema, endpoint, pool, factory, provider })
     }
 
-    // TODO: Docs
+    /// Return the name of the catalog in `DataFusion`'s context that this builder is configuring.
     pub fn name(&self) -> &str { &self.catalog }
 
-    // TODO: Docs
+    /// Return the currently set schema (database) being targeted. Can be changed on the fly by
+    /// calling `Self::with_schema`.
     pub fn schema(&self) -> &str { &self.schema }
 
-    // TODO: Docs
-    pub fn connection_pool(&self) -> &ClickHouseConnectionPool { &self.pool }
-
-    // TODO: Docs - allows updating the schema and continuing
+    /// Update the current "schema" (database) that this builder is targeting, and continue
+    /// building.
+    ///
     /// # Errors
-    /// - Returns an error if the schema will be created and fails
+    /// - Returns an error if the schema needs to be created and fails
     pub async fn with_schema(mut self, name: impl Into<String>) -> Result<Self> {
         let name = name.into();
         // Don't re-create if schema is already set
@@ -216,14 +266,21 @@ impl ClickHouseCatalogBuilder {
 
         // Be sure to refresh the catalog before setting the schema
         self.provider.refresh_catalog(&self.pool).await?;
+
         Ok(self)
     }
 
-    /// # Return
+    /// Create a new table in the remote `ClickHouse` instance.
     ///
-    /// A [`ClickHouseTableCreator`] that can be used to create tables in the remote `ClickHouse`
-    /// instance.
-    pub fn with_table(
+    /// # Arguments
+    /// - `name`: The name of the table to create.
+    /// - `engine`: The engine to use for the table.
+    /// - `schema`: The schema of the table.
+    ///
+    /// # Returns
+    /// - A [`ClickHouseTableCreator`] that can be used to create tables in the remote `ClickHouse`
+    ///   instance.
+    pub fn with_new_table(
         &self,
         name: impl Into<String>,
         engine: impl Into<ClickHouseEngine>,
@@ -235,11 +292,17 @@ impl ClickHouseCatalogBuilder {
         ClickHouseTableCreator { name: table, builder: self.clone(), options, schema }
     }
 
-    /// # Return
+    /// Create a new table in the remote `ClickHouse` instance.
     ///
-    /// A [`ClickHouseTableCreator`] that can be used to create tables in the remote `ClickHouse`
-    /// instance.
-    pub fn with_table_and_options(
+    /// # Arguments
+    /// - `name`: The name of the table to create.
+    /// - `schema`: The schema of the table.
+    /// - `options`: More detailed `CreateOptions` for creating the provided table.
+    ///
+    /// # Returns
+    /// - A [`ClickHouseTableCreator`] that can be used to create tables in the remote `ClickHouse`
+    ///   instance.
+    pub fn with_new_table_and_options(
         &self,
         name: impl Into<String>,
         schema: SchemaRef,
@@ -250,16 +313,13 @@ impl ClickHouseCatalogBuilder {
         ClickHouseTableCreator { name: table, builder: self.clone(), options, schema }
     }
 
-    // TODO: Docs - What does it do? Docs are lacking and hard to understand. It seems this will
-    // allow ad-hoc registration of ClickHouse tables, without going through the
-    // ClickHouseTableCreator.
-    //
-    /// Registers a specific `ClickHouse` table, optionally renaming it in the session state.
+    /// Register an existing `ClickHouse` table, optionally renaming it in the provided session
+    /// state.
     ///
     /// # Errors
     /// - Returns an error if the table does not exist in the remote database
     /// - Returns an error if the table cannot be registered to the context
-    pub async fn register_table(
+    pub async fn register_existing_table(
         &self,
         name: impl Into<TableReference>,
         name_as: Option<impl Into<TableReference>>,
@@ -280,7 +340,7 @@ impl ClickHouseCatalogBuilder {
         let table = TableReference::full(self.catalog.as_str(), database, name.table());
         let table_as = name_as.map(Into::into).unwrap_or(table.clone());
 
-        let factory = ClickHouseTableFactory::new(self.pool.clone());
+        let factory = ClickHouseTableFactory::new(Arc::clone(&self.pool));
         let provider = factory.table_provider(table).await?;
         debug!(?table_as, "Registering ClickHouse table provider");
         drop(ctx.register_table(table_as, provider)?);
@@ -288,11 +348,11 @@ impl ClickHouseCatalogBuilder {
         Ok(())
     }
 
-    // TODO: Remove - DOCS!!! Either THIS or `build` MUST be called for table
-    // creation to take effect.
-    //
     /// Build the current `schema` (database) being managed by this catalog, optionally registering
     /// a new schema to continue building
+    ///
+    /// Note: For the `SessionContext` to recognize the added tables and updated schema, either this
+    /// function or `Self::build` must be called.
     ///
     /// # Errors
     /// - Returnes an error if an error occurs while refreshing the catalog
@@ -308,34 +368,29 @@ impl ClickHouseCatalogBuilder {
 
     /// Re-register the catalog, updating the [`SessionContext`], and return the updated context.
     ///
-    /// NOTE: It is important to use the [`SessionContext`] provided back from this function.
+    /// Note: Important! For the [`SessionContext`] to recognize the added tables and updated
+    /// schema, either this function or `Self::build` must be called. For that reason, it is
+    /// important to  use the [`SessionContext`] provided back from this function.
     ///
     /// # Errors
     /// - Returns an error if the `SessionContext` has not been federated
     /// - Returnes an error if an error occurs while refreshing the catalog
-    #[cfg(feature = "federation")]
+    /// - Returns an error if the "federation" feature is enabled but the context is not federated
     pub async fn build(&self, ctx: &SessionContext) -> Result<Arc<ClickHouseCatalogProvider>> {
-        use datafusion::common::exec_err;
+        #[cfg(feature = "federation")]
+        {
+            use datafusion::common::exec_err;
 
-        use crate::federation::FederatedContext as _;
+            use crate::federation::FederatedContext as _;
 
-        if !ctx.is_federated() {
-            return exec_err!(
-                "Building this schema with federation enabled but no federated SessionContext \
-                 will fail. Call `ctx.federate()` before providing a context to build with."
-            );
+            if !ctx.is_federated() {
+                return exec_err!(
+                    "Building this schema with federation enabled but no federated SessionContext \
+                     will fail. Call `ctx.federate()` before providing a context to build with."
+                );
+            }
         }
 
-        self.build_internal(ctx).await
-    }
-
-    /// Re-register the catalog, updating the [`SessionContext`], and return the updated context.
-    ///
-    /// NOTE: It is important to use the [`SessionContext`] provided back from this function.
-    /// # Errors
-    /// - Returnes an error if an error occurs while refreshing the catalog
-    #[cfg(not(feature = "federation"))]
-    pub async fn build(&self, ctx: &SessionContext) -> Result<Arc<ClickHouseCatalogProvider>> {
         self.build_internal(ctx).await
     }
 
@@ -408,9 +463,7 @@ impl ClickHouseTableCreator {
             schema: Arc::new(DFSchema::try_from(Arc::clone(&self.schema))?),
             options,
             column_defaults,
-            // TODO: Remove
             constraints: Constraints::default(),
-            // constraints: Constraints::empty(),
             table_partition_cols: vec![],
             if_not_exists: false,
             location: String::new(),

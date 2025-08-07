@@ -7,6 +7,9 @@
 //! Equally as important is `ClickHouseSessionContext`. `DataFusion` doesn't support providing a
 //! custom `SessionContextProvider` (impl `ContextProvider`). Currently this is the only way to
 //! prevent the "optimization" away of UDFs that are meant to be pushed down to `ClickHouse`.
+pub mod plan_node;
+pub mod planner;
+
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
@@ -26,6 +29,7 @@ use datafusion::logical_expr::planner::{ExprPlanner, TypePlanner};
 use datafusion::logical_expr::var_provider::is_system_variables;
 use datafusion::logical_expr::{AggregateUDF, LogicalPlan, ScalarUDF, TableSource, WindowUDF};
 use datafusion::optimizer::AnalyzerRule;
+use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner};
 use datafusion::prelude::{DataFrame, Expr, SQLOptions, SessionContext};
@@ -34,10 +38,11 @@ use datafusion::sql::planner::{ContextProvider, ParserOptions, SqlToRel};
 use datafusion::sql::{ResolvedTableReference, TableReference};
 use datafusion::variable::VarType;
 
-use crate::udfs::analyzer::ClickHouseFunctionPushdown;
+use self::planner::ClickHouseExtensionPlanner;
+use crate::analyzer::function_pushdown::ClickHouseFunctionPushdown;
+use crate::udfs::apply::{CLICKHOUSE_APPLY_ALIASES, clickhouse_apply_udf};
+use crate::udfs::clickhouse::{CLICKHOUSE_UDF_ALIASES, clickhouse_udf};
 use crate::udfs::placeholder::PlaceholderUDF;
-use crate::udfs::planner::ClickHouseExtensionPlanner;
-use crate::udfs::pushdown::{CLICKHOUSE_UDF_ALIASES, clickhouse_udf_pushdown_udf};
 
 // TODO: Remove - docs
 // Convenience method for preparing a session context both with federation if the feature is enabled
@@ -61,13 +66,11 @@ pub fn prepare_session_context(
         .analyzer()
         .rules
         .iter()
-        .any(|rule| rule.name() == "clickhouse_pushdown_analyzer")
+        .any(|rule| rule.name() == ClickHouseFunctionPushdown.name())
     {
         ctx.into_state_builder()
     } else {
-        let mut analyzer_rules = state.analyzer().rules.clone();
-        analyzer_rules
-            .push(Arc::new(ClickHouseFunctionPushdown) as Arc<dyn AnalyzerRule + Send + Sync>);
+        let analyzer_rules = configure_analyzer_rules(&state);
         ctx.into_state_builder().with_analyzer_rules(analyzer_rules)
     };
     // Finally, build the context again passing the ClickHouseQueryPlanner
@@ -78,10 +81,23 @@ pub fn prepare_session_context(
             )))
             .build(),
     );
-    ctx.register_udf(clickhouse_udf_pushdown_udf());
-    // TODO: Remove
-    // ctx.register_udf(clickhouse_apply_udf());
+    ctx.register_udf(clickhouse_udf());
+    ctx.register_udf(clickhouse_apply_udf());
     ctx
+}
+
+pub fn configure_analyzer_rules(state: &SessionState) -> Vec<Arc<dyn AnalyzerRule + Send + Sync>> {
+    // Pull out analyzer rules
+    let mut analyzer_rules = state.analyzer().rules.clone();
+
+    // Insert the ClickHouseFunctionPushdown before type coercion.
+    // This datafusion to optimize for the data types expected.
+    let type_coercion = TypeCoercion::default();
+    let pos = analyzer_rules.iter().position(|x| x.name() == type_coercion.name()).unwrap_or(0);
+
+    let pushdown_rule = Arc::new(ClickHouseFunctionPushdown);
+    analyzer_rules.insert(pos, pushdown_rule);
+    analyzer_rules
 }
 
 // TODO: Docs - LOTS OF DOCS NEEDED HERE!!!
@@ -180,6 +196,7 @@ impl ClickHouseSessionContext {
     /// Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn sql_with_options(&self, sql: &str, options: SQLOptions) -> Result<DataFrame> {
         let state = self.inner.state();
+
         let statement = state.sql_to_statement(sql, "ClickHouse")?;
         let plan = self.statement_to_plan(&state, statement).await?;
         options.verify_plan(&plan)?;
@@ -196,12 +213,8 @@ impl ClickHouseSessionContext {
     ) -> Result<LogicalPlan> {
         let references = state.resolve_table_references(&statement)?;
 
-        // TODO: Remove
-        // let lambda_planner = Arc::new(ClickHouseLambdaPlanner);
         let provider =
             ClickHouseContextProvider::new(state.clone(), HashMap::with_capacity(references.len()));
-        // TODO: Remove
-        // .with_expr_planner(lambda_planner);
 
         let mut provider = if let Some(planner) = self.expr_planner.as_ref() {
             provider.with_expr_planner(Arc::clone(planner))
@@ -304,14 +317,13 @@ impl ContextProvider for ClickHouseContextProvider {
     fn get_function_meta(&self, name: &str) -> Option<Arc<ScalarUDF>> {
         // Early exit for clickhouse pushdown
         if CLICKHOUSE_UDF_ALIASES.contains(&name) {
-            return Some(Arc::new(clickhouse_udf_pushdown_udf()));
+            return Some(Arc::new(clickhouse_udf()));
         }
 
-        // TODO: Remove
-        // // Early exit for clickhouse apply
-        // if CLICKHOUSE_APPLY_ALIASES.contains(&name) {
-        //     return Some(Arc::new(clickhouse_apply_udf()));
-        // }
+        // Early exit for clickhouse apply
+        if CLICKHOUSE_APPLY_ALIASES.contains(&name) {
+            return Some(Arc::new(clickhouse_apply_udf()));
+        }
 
         // Delegate to inner provider for other UDFs
         if let Some(func) = self.state.scalar_functions().get(name) {
