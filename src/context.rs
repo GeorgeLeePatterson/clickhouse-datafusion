@@ -229,10 +229,10 @@ impl ClickHouseSessionContext {
             let resolved = reference.resolve(&catalog.default_catalog, &catalog.default_schema);
             if let Entry::Vacant(v) = provider.tables.entry(resolved) {
                 let resolved = v.key();
-                if let Ok(schema) = provider.state.schema_for_ref(resolved.clone()) {
-                    if let Some(table) = schema.table(&resolved.table).await? {
-                        let _ = v.insert(provider_as_source(table));
-                    }
+                if let Ok(schema) = provider.state.schema_for_ref(resolved.clone())
+                    && let Some(table) = schema.table(&resolved.table).await?
+                {
+                    let _ = v.insert(provider_as_source(table));
                 }
             }
         }

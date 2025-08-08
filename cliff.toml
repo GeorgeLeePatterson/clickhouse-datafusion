@@ -19,7 +19,7 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
     ### {{ group | upper_first }}
     {% for commit in commits %}
-        - {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/georgeleepatterson/clickhouse-arrow/commit/{{ commit.id }}))
+        - {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/{{ commit.id }}))
     {%- endfor %}
 {% endfor %}\n
 """
@@ -31,7 +31,7 @@ conventional_commits = true
 filter_unconventional = true
 split_commits = false
 commit_preprocessors = [
-    { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/georgeleepatterson/clickhouse-arrow/issues/${2}))" },
+    { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/${2}))" },
 ]
 commit_parsers = [
     { message = "^feat", group = "Features" },
@@ -43,6 +43,8 @@ commit_parsers = [
     { message = "^test", group = "Testing" },
     { message = "^chore\\(release\\):", skip = true },
     { message = "^chore", group = "Miscellaneous Tasks" },
+    { message = "^ci", group = "Miscellaneous Tasks" },
+    { message = "^revert", group = "Revert" },
     { body = ".*security", group = "Security" },
 ]
 protect_breaking_commits = false

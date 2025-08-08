@@ -141,18 +141,17 @@ impl ClickHouseApplyRewriter {
         // Transform the body expression, replacing columns with parameters
         let transformed_body = body
             .transform(|expr| {
-                if let Expr::Placeholder(ref placeholder) = expr {
-                    if let Some((param_name, _)) =
+                if let Expr::Placeholder(ref placeholder) = expr
+                    && let Some((param_name, _)) =
                         param_map.iter().find(|(p, _)| p.id == placeholder.id)
-                    {
-                        let variable = param_name.id.trim_start_matches('$');
-                        // Use unqualified column which should unparse without quotes
-                        return Ok(Transformed::new(
-                            Expr::Column(Column::new_unqualified(variable)),
-                            true,
-                            TreeNodeRecursion::Jump,
-                        ));
-                    }
+                {
+                    let variable = param_name.id.trim_start_matches('$');
+                    // Use unqualified column which should unparse without quotes
+                    return Ok(Transformed::new(
+                        Expr::Column(Column::new_unqualified(variable)),
+                        true,
+                        TreeNodeRecursion::Jump,
+                    ));
                 }
                 Ok(Transformed::no(expr))
             })

@@ -12,10 +12,11 @@ use crate::udfs::clickhouse::CLICKHOUSE_UDF_ALIASES;
 
 // Per expression check
 pub(super) fn is_clickhouse_function(expr: &Expr) -> bool {
-    if let Expr::ScalarFunction(ScalarFunction { func, args, .. }) = expr {
-        if CLICKHOUSE_UDF_ALIASES.contains(&func.name()) && args.len() == 2 {
-            return true;
-        }
+    if let Expr::ScalarFunction(ScalarFunction { func, args, .. }) = expr
+        && CLICKHOUSE_UDF_ALIASES.contains(&func.name())
+        && args.len() == 2
+    {
+        return true;
     }
     false
 }

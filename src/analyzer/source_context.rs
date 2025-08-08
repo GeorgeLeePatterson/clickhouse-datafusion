@@ -34,10 +34,10 @@ impl Ord for SourceContext {
             (SourceContext::Values, SourceContext::Values) => std::cmp::Ordering::Equal,
             (a, b) => {
                 // If both source context, attempt compare
-                if let (SourceContext::Scalar(a), SourceContext::Scalar(b)) = (a, b) {
-                    if let Some(ordering) = a.partial_cmp(b) {
-                        return ordering;
-                    }
+                if let (SourceContext::Scalar(a), SourceContext::Scalar(b)) = (a, b)
+                    && let Some(ordering) = a.partial_cmp(b)
+                {
+                    return ordering;
                 }
 
                 // Otherwise hash a and b and order deterministically

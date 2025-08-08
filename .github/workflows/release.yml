@@ -38,15 +38,9 @@ jobs:
             exit 1
           fi
 
-          # Verify constants.rs matches
-          echo "Verifying version constants..."
-          cargo test test_version_matches_cargo --features test-utils
-
       - name: Publish to crates.io
         run: |
-          cargo publish -p clickhouse-arrow-derive --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          sleep 30  # Wait for crates.io to index
-          cargo publish -p clickhouse-arrow --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          cargo publish -p clickhouse-datafusion --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

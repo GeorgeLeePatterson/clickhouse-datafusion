@@ -72,3 +72,11 @@ coverage:
     cargo llvm-cov --no-report --ignore-filename-regex "(examples).*" -F test-utils,mocks,federation
     cargo llvm-cov --no-report --ignore-filename-regex "(examples).*" -F test-utils,federation
     cargo llvm-cov report -vv --html --output-dir coverage --open
+
+coverage-lcov:
+    cargo llvm-cov clean --workspace
+    cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils,mocks
+    cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils
+    cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils,mocks,federation
+    cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils,federation
+    cargo llvm-cov report --lcov --output-path lcov.info

@@ -248,11 +248,11 @@ impl SourceLineageVistor {
                     .iter()
                     .find(|c| c.relation == in_col.relation && c.name() == in_col.name())
                     .or(out_cols.iter().find(|c| c.name() == in_col.name()));
-                if let Some(out_col) = found {
-                    if let Some(existing_lineage) = self.column_lineage.get(&in_col).cloned() {
-                        // Carry forward the input column's lineage to the output column
-                        drop(self.column_lineage.insert(out_col.clone(), existing_lineage));
-                    }
+                if let Some(out_col) = found
+                    && let Some(existing_lineage) = self.column_lineage.get(&in_col).cloned()
+                {
+                    // Carry forward the input column's lineage to the output column
+                    drop(self.column_lineage.insert(out_col.clone(), existing_lineage));
                 }
             }
         }
