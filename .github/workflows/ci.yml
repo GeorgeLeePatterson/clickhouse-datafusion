@@ -21,7 +21,7 @@ env:
   RUSTFLAGS: '-C debuginfo=line-tables-only -C incremental=false'
 
 jobs:
-  checks:
+  test:
     name: Test
     runs-on: ubuntu-latest
     strategy:
