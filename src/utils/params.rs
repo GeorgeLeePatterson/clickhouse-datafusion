@@ -138,11 +138,11 @@ pub fn pool_builder_to_params(
 ) -> Result<ClientOptionParams> {
     let mut params = [
         (ENDPOINT_PARAM, ClientOption::Value(endpoint.into())),
-        (USERNAME_PARAM, ClientOption::Value(builder.client_options().username.to_string())),
+        (USERNAME_PARAM, ClientOption::Value(builder.client_options().username.clone())),
         (PASSWORD_PARAM, ClientOption::Secret(builder.client_options().password.clone())),
         (
             DEFAULT_DATABASE_PARAM,
-            ClientOption::Value(builder.client_options().default_database.to_string()),
+            ClientOption::Value(builder.client_options().default_database.clone()),
         ),
         (COMPRESSION_PARAM, ClientOption::Value(builder.client_options().compression.to_string())),
     ]
@@ -151,7 +151,7 @@ pub fn pool_builder_to_params(
     .collect::<HashMap<_, _>>();
 
     if let Some(domain) = builder.client_options().domain.as_ref() {
-        drop(params.insert(DOMAIN_PARAM.into(), ClientOption::Value(domain.to_string())));
+        drop(params.insert(DOMAIN_PARAM.into(), ClientOption::Value(domain.clone())));
     }
     if let Some(cafile) = builder.client_options().cafile.as_ref() {
         drop(params.insert(
@@ -400,7 +400,7 @@ pub(crate) fn ast_expr_to_clickhouse_default(expr: &ast::Expr) -> Result<String>
         match value {
             ast::Value::SingleQuotedString(s) => {
                 if s.starts_with('\'') && s.ends_with('\'') {
-                    Ok(s.to_string())
+                    Ok(s.clone())
                 } else if s.starts_with('"') && s.ends_with('"') {
                     Ok(s.trim_matches('"').to_string())
                 } else {
@@ -408,8 +408,8 @@ pub(crate) fn ast_expr_to_clickhouse_default(expr: &ast::Expr) -> Result<String>
                 }
             }
             // DoubleQuotedString is used to signify do not alter
-            ast::Value::DoubleQuotedString(s) => Ok(s.to_string()),
-            ast::Value::Number(n, _) => Ok(n.to_string()),
+            ast::Value::DoubleQuotedString(s) => Ok(s.clone()),
+            ast::Value::Number(n, _) => Ok(n.clone()),
             ast::Value::Boolean(b) => Ok(if *b { "1" } else { "0" }.to_string()),
             ast::Value::Null => Ok("NULL".to_string()),
             _ => plan_err!("Unsupported default value: {value:?}"),

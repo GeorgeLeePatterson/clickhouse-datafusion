@@ -339,7 +339,7 @@ pub mod federation {
         fn as_any(&self) -> &dyn Any { self }
 
         fn schema_names(&self) -> Vec<String> {
-            self.schemas.iter().map(|c| c.key().to_string()).collect()
+            self.schemas.iter().map(|c| c.key().clone()).collect()
         }
 
         fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
@@ -369,7 +369,7 @@ pub mod federation {
                 return Ok(None);
             }
             let removed =
-                self.schemas.remove_if(name, |_, v| (cascade || v.table_names().is_empty()));
+                self.schemas.remove_if(name, |_, v| cascade || v.table_names().is_empty());
 
             // This means attempt to drop non-empty table without cascade, since existence was
             // checked above, and None implies the schema contained tables

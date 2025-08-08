@@ -17,9 +17,9 @@ Thank you for your interest in contributing to clickhouse-datafusion! This docum
 
 - Rust 1.70+ (we use the 2024 edition)
 - Docker (for running integration tests)
-- ClickHouse server (optional for manual testing)
+- `ClickHouse` server (optional for manual testing)
 
-### DataFusion
+### `DataFusion`
 
 TODO: Remove - refer to DataFusion's contribution guide
 
@@ -115,19 +115,19 @@ cargo audit
 Key components:
 
 - **Client Module** (`src/client/`): Connection management and query execution
-- **Protocol Implementation** (`src/native/`): ClickHouse wire protocol
+- **Protocol Implementation** (`src/native/`): `ClickHouse` wire protocol
 - **Data Formats**:
   - Entrypoint (`src/formats/`): Internal type system
-  - Arrow Format (`src/formats/arrow/`, `src/arrow/`): Arrow RecordBatch integration
+  - Arrow Format (`src/formats/arrow/`, `src/arrow/`): Arrow `RecordBatch` integration
   - Native Format (`src/formats/native/`, `src/native/`): Internal type system
-- **Type System** (`src/native/types/`, `src/arrow/types/`): Comprehensive ClickHouse type support
+- **Type System** (`src/native/types/`, `src/arrow/types/`): Comprehensive `ClickHouse` type support
 
 ## Reporting Issues
 
 When reporting issues, please include:
 
 - Rust version (`rustc --version`)
-- ClickHouse server version
+- `ClickHouse` server version
 - Minimal reproducible example
 - Error messages and stack traces
 - Expected vs actual behavior

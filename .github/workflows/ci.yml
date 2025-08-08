@@ -21,7 +21,7 @@ env:
   RUSTFLAGS: '-C debuginfo=line-tables-only -C incremental=false'
 
 jobs:
-  test:
+  checks:
     name: Test
     runs-on: ubuntu-latest
     strategy:
@@ -39,6 +39,7 @@ jobs:
         components: rustfmt, clippy
 
     - name: Install nightly for formatting
+      if: matrix.rust == 'stable'
       uses: dtolnay/rust-toolchain@nightly
       with:
         components: rustfmt
@@ -61,6 +62,7 @@ jobs:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+    # NOTE: Nightly is always used since rustfmt requires it for some settings
     - name: Check formatting
       run: cargo +nightly fmt -- --check
 
@@ -72,11 +74,11 @@ jobs:
           cargo +stable clippy --all-features --all-targets -- -D warnings
         fi
 
-    - name: Build
-      run: cargo +${{ matrix.rust }} build --all-features --verbose
+    - name: Install just
+      uses: taiki-e/install-action@just
 
     - name: Run tests
-      run: cargo +${{ matrix.rust }} test --features test-utils --verbose
+      run: just -f .justfile test
 
     # TODO: Convert doc test to tests and reenable
     # - name: Run doc tests
@@ -108,7 +110,7 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: lcov.info
-        fail_ci_if_error: false
+        fail_ci_if_error: true
         disable_telem: true
 
   security:

@@ -20,7 +20,7 @@ Environment variables for debugging:
 
 ## Architecture Overview
 
-This is a Rust library that integrates ClickHouse with Apache DataFusion, allowing ClickHouse tables to be queried through DataFusion's SQL engine.
+This is a Rust library that integrates ClickHouse with Apache DataFusion, allowing `ClickHouse` tables to be queried through DataFusion's SQL engine.
 
 ### Core Components
 
@@ -30,8 +30,8 @@ This is a Rust library that integrates ClickHouse with Apache DataFusion, allowi
 
 2. **Custom Context Support** (src/context.rs)
    - `ClickHouseSessionContext` extends DataFusion's SessionContext
-   - Custom QueryPlanner prevents DataFusion from optimizing away ClickHouse functions
-   - Enables ClickHouse UDF pushdown through special `clickhouse()` wrapper function
+   - Custom QueryPlanner prevents DataFusion from optimizing away `ClickHouse` functions
+   - Enables `ClickHouse` UDF pushdown through special `clickhouse()` wrapper function
 
 3. **Table Provider** (src/table_provider.rs)
    - Implements DataFusion's TableProvider trait
@@ -39,7 +39,7 @@ This is a Rust library that integrates ClickHouse with Apache DataFusion, allowi
    - Manages execution of queries against ClickHouse
 
 4. **Federation** (src/federation.rs) - Optional feature for cross-database queries
-   - Allows joining ClickHouse tables with other DataFusion sources
+   - Allows joining `ClickHouse` tables with other `DataFusion` sources
    - Automatic query pushdown optimization
    - Enabled by default in Cargo.toml
 
@@ -55,22 +55,22 @@ This is a Rust library that integrates ClickHouse with Apache DataFusion, allowi
 
 ### Key Design Decisions
 
-- Uses Arrow format for efficient data transfer between ClickHouse and DataFusion
+- Uses Arrow format for efficient data transfer between `ClickHouse` and `DataFusion`
 - Connection pooling for performance (via clickhouse-arrow)
-- Custom context required for full ClickHouse function support
+- Custom context required for full `ClickHouse` function support
 - String encoding defaults to UTF-8 for DataFusion compatibility
 - Column lineage tracking for sophisticated function pushdown optimization
 
 ### Testing Strategy
 
-Tests use testcontainers to spin up isolated ClickHouse instances. Test modules:
+Tests use testcontainers to spin up isolated `ClickHouse` instances. Test modules:
 - `tests/e2e.rs` - Basic functionality tests
-- `tests/common/` - Shared test utilities and ClickHouse container setup
+- `tests/common/` - Shared test utilities and `ClickHouse` container setup
 - Integration tests demonstrate real usage patterns
 
 When writing tests, use the `init_clickhouse_context_*` helpers from tests/common/mod.rs.
 
-## ClickHouse Function Pushdown System
+## `ClickHouse` Function Pushdown System
 
 ### Current Status (as of 2025-07-19)
 - ✅ Clean analyzer implementation completed
