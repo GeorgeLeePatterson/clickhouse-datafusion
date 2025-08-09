@@ -62,7 +62,6 @@ test-federation test_name='':
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
      -F test-utils,federation --test "e2e" "{{ test_name }}"  -- --nocapture --show-output
 
-
 # --- COVERAGE ---
 
 coverage:
@@ -80,6 +79,11 @@ coverage-lcov:
     cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils,mocks,federation
     cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils,federation
     cargo llvm-cov report --lcov --output-path lcov.info
+
+# --- EXAMPLES ---
+
+example example:
+    cargo run -F test-utils --example "{{ example }}"
 
 # --- DOCS ---
 

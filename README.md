@@ -1,6 +1,6 @@
-# 🚇 `Clickhouse` & `DataFusion`
+# 🚇 `ClickHouse` `DataFusion` Integration
 
-Extending `DataFusion` with `ClickHouse` support using [clickhouse-arrow](https://github.com/GeorgeLeePatterson/clickhouse-arrow).
+A high-performance Rust library that integrates `ClickHouse` with Apache `DataFusion`, enabling seamless querying across `ClickHouse` and other data sources.
 
 [![Crates.io](https://img.shields.io/crates/v/clickhouse-datafusion.svg)](https://crates.io/crates/clickhouse-datafusion)
 [![Documentation](https://docs.rs/clickhouse-datafusion/badge.svg)](https://docs.rs/clickhouse-datafusion)
@@ -8,75 +8,306 @@ Extending `DataFusion` with `ClickHouse` support using [clickhouse-arrow](https:
 [![Build Status](https://img.shields.io/github/actions/workflow/status/GeorgeLeePatterson/clickhouse-datafusion/ci.yml?branch=main)](https://github.com/GeorgeLeePatterson/clickhouse-datafusion/actions)
 [![Coverage](https://codecov.io/gh/GeorgeLeePatterson/clickhouse-datafusion/branch/main/graph/badge.svg)](https://codecov.io/gh/GeorgeLeePatterson/clickhouse-datafusion)
 
-## `ClickHouse`, `Arrow`, and `DataFusion`
+Built on [clickhouse-arrow](https://github.com/GeorgeLeePatterson/clickhouse-arrow) for optimal performance and [DataFusion](https://datafusion.apache.org/) for advanced SQL analytics.
 
-> TODO: Mention `clickhouse-arrow` and how it is used, ie `ClickHouseTableProvder`, the various builders, `ClickHouseSessionContext`, `into_clickhouse_context`, and `ClickHouseQueryPlanner`
+## Why clickhouse-datafusion?
 
-## `ClickHouse` and `datafusion-federation`
+- **🚀 High Performance**: Built on clickhouse-arrow for optimal data transfer and Arrow format efficiency
+- **🔗 Federation Support**: Join `ClickHouse` tables with other `DataFusion` sources seamlessly
+- **🛠️ `ClickHouse` UDFs**: Direct access to `ClickHouse` functions in `DataFusion` SQL queries
+- **📊 Advanced Analytics**: Support for window functions, CTEs, subqueries, and complex JOINs
+- **⚡ Connection Pooling**: bb8-based connection pooling for scalability
+- **🎯 Arrow Native**: Native Apache Arrow integration for zero-copy data processing
+- **🔄 Schema Flexibility**: Optional schema coercion for type compatibility
 
-> TODO: Mention the feature "federation", how a custom `LogicalPlan::Extension` is used when the feature is disabled, otherwise the federation of the plan is deferred to `datafusion-federation`. Mention `ctx.federate()` and how federation setup is made easier with `ClickHouseSessionContext` and `ClickHouseQueryPlanner`.
+## Quick Start
 
-## `ClickHouse` Functions vs `DataFusion` Functions
+Add to your `Cargo.toml`:
 
-So important it requires it's own section.
-TODO: Remove - add docs about the following
-1. `ClickHouseEvalUDF` functions can be used with feature = "federation", which can be convenient as it allows clickhouse functions without a custom `SessionContext` (although `datafusion-federation` needs their `QueryPlanner` setup).
-2. Otherwise it's easier to replace the `SessionContext` with `into_clickhouse_context()` to get full function pushdown capabilities, as well as the ability to use `ClickHouse` higher order functions like `arrayMap`.
-
-## `ClickHouseSessionContext`, `into_clickhouse_context`, and `ClickHouseQueryPlanner`
-
-TODO: Remove - explain why these are necessary
-
-- `DataFusion` will optimize UDFs during the planning phase
-- If a UDF is not recognized, `DataFusion` will error
-- `DataFusion` recognizes UDFs through the `SessionContextProvider` (`impl ContextProvider`) and the methods available through `FunctionRegistry`.
-- The problem is that `DataFusion` could not possibly recognize all the methods `ClickHouse` offers.
-- The problem is exacerbated by the fact that verification of UDFs is done early in the process (hence the usage of an `Analyzer` that runs before `Optimizers`)
-- The problem could be mitigated or solved entirely if a custom `FunctionRegistry` or `ContextProvider` could be provided as sql is being parsed.
-- Well, to be clear, you can do that currently, that is how `ClickHouseSessionContext` works under the hood.
-
-## `ClickHouseUDF`, `ClickHouseFunctionNode`, and `datafusion-federation`
-
-> [!NOTE]
-> When federation is enabled, no custom `Extension` node will be used. The result of query planning may differ than when federation is disabled. That is because `datafusion-federation` uses a different method to "federate" plans.
-
-### TODO: Remove - Explain details of the syntax of the clickhouse function
-
-- The second argument is the RETURN type of the result of running the function on the remote `ClickHouse` server. If this is wrong, the query may fail.
-- Automatic type coercion can be enabled by setting `ClickHouseBuilder::with_coercion(true)`. For an example, look at the `test_clickhouse_udfs_schema_coercion` e2e test. Note, this will not work in all cases. The coercion uses arrow's compute kernels under the hood.
-- For example, there is not a simple way to specify that an `arrayJoin` will produce a `Utf8` as opposed to the `List(Utf8)` type that the `DataFusion` schema will reflect, which is why the return type argument is needed.
-
-## Example Usage
-
-This example demonstrates:
-* A `ClickHouse` function, parsed fully into SQL AST: `clickhouse(exp(p2.id), 'Float64')`
-* `DataFusion` UDF - works as intended: `concat(p2.names, 'hello')`
-* Note the backticks '\`' on `arrayJoin`. `DataFusion` is case-insensitive while `ClickHouse` is case-sensitive.
-* Functions/UDFs are supported in subqueries, top-level projections, etc. The analyzer will recognize them and optimize them accordingly.
-
-```rust,ignore
-let query = format!(
-    "
-    SELECT p.name,
-           m.event_id,
-           -- ClickHouse Function, parsed fully into SQL AST
-           clickhouse(exp(p2.id), 'Float64'),
-           -- DataFusion UDF - works as intended
-           concat(p2.names, 'hello')
-    FROM memory.internal.mem_events m
-    JOIN clickhouse.{db}.people p ON p.id = m.event_id
-    JOIN (
-        SELECT id,
-               -- Note the backticks '`'. DataFusion is case-insensitive while ClickHouse is case-sensitive.
-               clickhouse(`arrayJoin`(names), 'Utf8') as names
-        FROM clickhouse.{db}.people2
-    ) p2 ON p.id = p2.id
-    "
-);
-let results = ctx.sql(&query).await.collect().await?;
-arrow::util::pretty::print_batches(&results)?;
+```toml
+[dependencies]
+clickhouse-datafusion = "0.1"
 ```
 
-## CLAUDE.md
+### Basic Usage
 
-Left as a convenience for other contributers if they use Claude to write code, save you some tokens.
+```rust,ignore
+use clickhouse_arrow::prelude::ClickHouseEngine;
+use clickhouse_datafusion::{ClickHouseBuilder, ClickHouseSessionContext};
+use datafusion::prelude::SessionContext;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create DataFusion context with ClickHouse UDF support
+    let ctx = ClickHouseSessionContext::from(SessionContext::new());
+
+    // Build ClickHouse integration
+    let clickhouse = ClickHouseBuilder::new("clickhouse://localhost:9000")
+        .configure_arrow_options(|opts| opts.with_strings_as_strings(true))
+        .build_catalog(&ctx, Some("clickhouse"))
+        .await?;
+
+    // Define schema for test table
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+    // Set schema (database name)
+    let clickhouse = clickhouse.with_schema("my_database").await?;
+
+    // Register existing table
+    let clickhouse = clickhouse.register_existing_table("my_database").await?;
+
+    // Create a new table on the remove server and get the catalog builder back
+    let clickhouse =
+        clickhouse.with_new_table("new_table", ClickHouseEngine::MergeTree).create(ctx).await?;
+
+    // Finally build the catalog so the changes take effect (in DataFusion)
+    let _catalog = clickhouse.build(&ctx).await?;
+
+    // Query ClickHouse tables
+    let df = ctx.sql("SELECT * FROM clickhouse.my_database.my_table LIMIT 10").await?;
+    datafusion::arrow::util::pretty::print_batches(&df.collect().await?)?;
+
+    Ok(())
+}
+```
+
+### With Federation (Cross-Database Queries)
+
+```rust,ignore
+use clickhouse_arrow::prelude::ClickHouseEngine;
+use clickhouse_datafusion::{ClickHouseBuilder, ClickHouseSessionContext};
+use clickhouse_datafusion::federation::FederatedContext;
+use datafusion::prelude::SessionContext;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Enable federation for cross-database queries
+    let ctx = SessionContext::new().federate();
+
+    // Optionally enable the full ClickHouseQueryPlanner
+    //
+    // NOTE: Not required, provides a custom QueryPlanner and Analyzer with optional federation.
+    let ctx = ClickHouseSessionContext::from(ctx);
+
+    // Set up ClickHouse catalog
+    let clickhouse = ClickHouseBuilder::new("clickhouse://localhost:9000")
+        .build_catalog(&ctx, Some("clickhouse")) // default catalog name
+        .await?;
+
+    // Create a table on the remote server and build the catalog (so changes are registered in
+    // DataFusion). `clickhouse` can continue to be used to create as many tables as needed. But
+    // remember to always `build` the catalog when you want to interact with it via DataFusion
+    // queries.
+    let _clickhouse_catalog_provider = clickhouse
+        .with_schema("analytics")
+        .await?
+        // Create users table
+        .with_new_table(
+            "user_events",
+            ClickHouseEngine::MergeTree,
+            // Define schemas for user table
+            Arc::new(Schema::new(vec![
+                Field::new("user_id", DataType::Int32, false),
+                Field::new("event_count", DataType::UInt32, false),
+            ])),
+        )
+        .update_create_options(|opts| opts.with_order_by(&["id".into()]))
+        .create(ctx)
+        .await?
+        .build(&ctx)
+        .await?;
+
+    // Register other data sources (Parquet, CSV, etc.)
+    ctx.register_parquet("local_data", "data.parquet", ParquetReadOptions::default()).await?;
+
+    // Join across different data sources
+    let df = ctx.sql("
+        SELECT ch.user_id,
+               ch.event_count,
+               local.user_name
+        FROM clickhouse.analytics.user_events ch
+        JOIN local_data local
+          ON ch.user_id = local.user_id
+        WHERE ch.event_count > 100
+    ").await?;
+    datafusion::arrow::util::pretty::print_batches(&df.collect().await?)?;
+
+    Ok(())
+}
+```
+
+## `ClickHouse` Functions
+
+Access `ClickHouse`'s powerful functions directly in `DataFusion` SQL:
+
+### Direct Function Calls
+
+```sql
+-- Mathematical functions
+SELECT clickhouse(exp(price), 'Float64') as exponential_price FROM products;
+
+-- String functions
+SELECT clickhouse(upper(name), 'Utf8') as uppercase_name FROM users;
+
+-- Array functions
+SELECT clickhouse(`arrayJoin`(tags), 'Utf8') as individual_tags FROM articles;
+```
+
+### Lambda Functions
+
+```sql
+-- Transform arrays with lambda functions
+SELECT
+    names,
+    clickhouse(`arrayMap`($x, concat($x, '_processed'), names), 'List(Utf8)') as processed_names
+FROM user_data;
+
+-- Filter arrays
+SELECT clickhouse(`arrayFilter`($x, length($x) > 3, tags), 'List(Utf8)') as long_tags
+FROM content;
+```
+
+### Complex Analytics
+
+```sql
+-- Window functions with ClickHouse functions
+SELECT
+    user_id,
+    clickhouse(exp(revenue), 'Float64') as exp_revenue,
+    SUM(revenue) OVER (PARTITION BY user_id ORDER BY date) as running_total
+FROM sales_data;
+
+-- CTEs with ClickHouse functions
+WITH processed_data AS (
+    SELECT
+        user_id,
+        clickhouse(`arrayJoin`(event_types), 'Utf8') as event_type
+    FROM user_events
+)
+SELECT event_type, COUNT(*) as event_count
+FROM processed_data
+GROUP BY event_type;
+```
+
+## Architecture
+
+### Core Components
+
+- **`ClickHouseBuilder`**: Main configuration entry point
+- **`ClickHouseSessionContext`**: Enhanced `DataFusion` context with `ClickHouse` UDF support
+- **Table Providers**: `DataFusion` integration layer for `ClickHouse` tables
+- **Federation**: Cross-database query support via datafusion-federation
+- **UDF System**: `ClickHouse` function integration with intelligent pushdown
+- **Function Analyzer**: Advanced optimization for UDF placement
+
+### Key Features
+
+#### Schema Management
+```rust
+// Create tables from Arrow schemas
+let schema = Schema::new(vec![
+    Field::new("id", DataType::Int64, false),
+    Field::new("name", DataType::Utf8, false),
+]);
+
+builder.create_table_if_not_exists(
+    "my_database.users",
+    &schema,
+    CreateOptions::from_engine("MergeTree")
+).await?;
+```
+
+#### Connection Pooling
+```rust
+let builder = ClickHouseBuilder::new("clickhouse://localhost:9000")
+    .configure_pool(|pool| pool.max_size(10))
+    .configure_client(|client| client.with_compression(CompressionMethod::LZ4))
+    .build_catalog(&ctx, Some("clickhouse"))
+    .await?;
+```
+
+#### Schema Coercion
+```rust
+let builder = ClickHouseBuilder::new("clickhouse://localhost:9000")
+    .with_schema_coercion(true) // Enable automatic type coercion
+    .build_catalog(&ctx, Some("clickhouse"))
+    .await?;
+```
+
+## Federation Support
+
+When the `federation` feature is enabled (default), clickhouse-datafusion can join `ClickHouse` tables with other `DataFusion` sources:
+
+```sql
+-- Join ClickHouse with Parquet files
+SELECT
+    ch.user_id,
+    ch.total_purchases,
+    parquet.user_segment
+FROM clickhouse.analytics.user_stats ch
+JOIN local_parquet.user_segments parquet
+    ON ch.user_id = parquet.user_id
+WHERE ch.total_purchases > 1000;
+
+-- Federated aggregations
+SELECT
+    segment,
+    AVG(clickhouse(log(total_purchases), 'Float64')) as avg_log_purchases
+FROM (
+    SELECT
+        ch.user_id,
+        ch.total_purchases,
+        csv.segment
+    FROM clickhouse.sales.users ch
+    JOIN local_csv.segments csv ON ch.user_id = csv.user_id
+)
+GROUP BY segment;
+```
+
+## Features
+
+- **Default**: Core functionality with `ClickHouse` integration
+- **federation**: Enable cross-database queries (enabled by default)
+- **cloud**: `ClickHouse` Cloud support
+- **test-utils**: Testing utilities for development
+
+## Development
+
+### Running Tests
+
+```bash
+# All tests with multiple feature combinations
+just test
+
+# Specific test types
+just test-e2e          # End-to-end tests
+just test-federation   # Federation tests
+just test-unit         # Unit tests only
+
+# Coverage reports
+just coverage          # HTML report
+just coverage-lcov     # LCOV for CI
+```
+
+### Environment Variables
+
+- `RUST_LOG=debug` - Enable debug logging
+- `DISABLE_CLEANUP=true` - Keep test containers running
+- `DISABLE_CLEANUP_ON_ERROR=true` - Keep containers on test failure
+
+## Examples
+
+See the [examples](examples/) directory for complete working examples:
+
+- **Basic Integration**: Simple `ClickHouse` querying
+- **Federation**: Cross-database joins
+- **UDF Usage**: `ClickHouse` function examples
+- **Schema Management**: Table creation and management
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.

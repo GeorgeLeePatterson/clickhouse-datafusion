@@ -35,5 +35,5 @@ pub use sink::*;
 
 #[cfg(feature = "test-utils")]
 mod dev_deps {
-    use tokio as _;
+    use {tokio as _, tracing_subscriber as _};
 }

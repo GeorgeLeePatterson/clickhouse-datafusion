@@ -28,16 +28,15 @@ mocks = [] # Used for unit tests and connection mocking
 async-trait = "0.1"
 clickhouse-arrow = { version = "0.1" }
 dashmap = "6"
-# TODO: Remove
-# datafusion = { path = "../datafusion/datafusion/core" }
 datafusion = "49"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 pin-project = "1"
 tracing = "0.1"
 
-# Testing
+# Testing and examples
 tokio = { version = "1", features = ["sync", "rt", "macros"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 # --- OPTIONAL ----
 # NOTE: There's a current "TODO" to enforce the compatibility fully, but updates seem to lag
@@ -46,8 +45,6 @@ tokio = { version = "1", features = ["sync", "rt", "macros"], optional = true }
 # TODO: Remove this when upstream PR has been merged
 # ref: [PR #135](https://github.com/datafusion-contrib/datafusion-federation/pull/135)
 [dependencies.datafusion-federation]
-# TODO: Remove
-# path = "../datafusion-federation/datafusion-federation"
 git = "https://github.com/GeorgeLeePatterson/datafusion-federation"
 branch = "fix-unnest-with-new-exprs"
 features = ["sql"]
@@ -106,6 +103,12 @@ debug = "full"
 
 [profile.instruments.package."*"]
 debug = "full"
+
+# EXAMPLES
+
+[[example]]
+name = "basic"
+required-features = ["test-utils"]
 
 # INTEGRATION TESTS
 
