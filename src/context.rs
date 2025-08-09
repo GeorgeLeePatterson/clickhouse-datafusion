@@ -1,5 +1,5 @@
-//! TODO: Docs - This module is EXTREMELY important. To fully support `ClickHouse` UDFs, the
-//! [`ClickHouseQueryPlanner`] MUST be used since it provides the [`ClickHouseExtensionPlanner`].
+//! To fully support `ClickHouse` UDFs, the [`ClickHouseQueryPlanner`] MUST be used since it
+//! provides the [`ClickHouseExtensionPlanner`].
 //!
 //! Additionally note how [`ClickHouseQueryPlanner`] provides `ClickHouseQueryPlanner::with_planner`
 //! to allow stacking planners, ensuring the `ClickHouseQueryPlanner` is on top.
@@ -102,7 +102,14 @@ pub fn configure_analyzer_rules(state: &SessionState) -> Vec<Arc<dyn AnalyzerRul
 
 // TODO: Docs - LOTS OF DOCS NEEDED HERE!!!
 //
-// Create a custom QueryPlanner to include ClickHouseExtensionPlanner
+/// Custom `ClickHouse` [`QueryPlanner`]
+///
+/// Includes the custom `ExtensionPlanner` [`ClickHouseExtensionPlanner`] automatically. When the
+/// `federation` feature is enabled, this `QueryPlanner` will include the
+/// `datafusion_federation::FederatedPlanner` as well.
+///
+/// Use [`ClickHouseQueryPlanner::new_with_planners`] to provide additional custom
+/// `ExtensionPlanner`s.
 #[derive(Clone)]
 pub struct ClickHouseQueryPlanner {
     planners: Vec<Arc<dyn ExtensionPlanner + Send + Sync>>,
@@ -119,7 +126,9 @@ impl Default for ClickHouseQueryPlanner {
 }
 
 impl ClickHouseQueryPlanner {
-    // TODO: Docs
+    /// Creates a new `ClickHouseQueryPlanner` with default planners.
+    ///
+    /// If `federation` feature is enabled, it includes the `FederatedPlanner`.
     pub fn new() -> Self {
         let planners = vec![
             #[cfg(feature = "federation")]
@@ -129,14 +138,15 @@ impl ClickHouseQueryPlanner {
         ClickHouseQueryPlanner { planners }
     }
 
-    // TODO: Docs
+    /// Creates a new `ClickHouseQueryPlanner` with the provided planners.
     pub fn new_with_planners(planners: Vec<Arc<dyn ExtensionPlanner + Send + Sync>>) -> Self {
         let mut this = Self::new();
         this.planners.extend(planners);
         this
     }
 
-    // TODO: Docs
+    /// Provides a `ClickHouseQueryPlanner` that has already been created with additional
+    /// `ExtensionPlanner`s.
     #[must_use]
     pub fn with_planner(mut self, planner: Arc<dyn ExtensionPlanner + Send + Sync>) -> Self {
         self.planners.push(planner);
@@ -157,7 +167,16 @@ impl QueryPlanner for ClickHouseQueryPlanner {
     }
 }
 
-/// Wrapper for [`SessionContext`] which allows running arbitrary `ClickHouse` functions.
+/// Wrapper for [`SessionContext`]
+///
+/// TODO: Improve docs
+///
+/// During plan creation, `DataFusion` will attempt to plan any functions recursively found in the
+/// sql AST generated. If the function is not recognized, an error will occur. This
+/// [`SessionContext`] wrapper hides away much of the boilerplate needed to allow running arbitrary
+/// `ClickHouse` functions in `DataFusion`. Because it also bootstraps the `SessionContext` with
+/// custom a `Analyzer` and `ExtensionPlanner`, these arbitrary functions can be "pushed down" if
+/// needed to be run on the remote `ClickHouse` instance without causing an error during planning.
 #[derive(Clone)]
 pub struct ClickHouseSessionContext {
     inner:        SessionContext,
@@ -165,7 +184,6 @@ pub struct ClickHouseSessionContext {
 }
 
 impl ClickHouseSessionContext {
-    // TODO: Docs
     pub fn new(
         ctx: SessionContext,
         extension_planners: Option<Vec<Arc<dyn ExtensionPlanner + Send + Sync>>>,
@@ -184,16 +202,14 @@ impl ClickHouseSessionContext {
 
     // TODO: Docs - mention and link the `sql` method on SessionContext
     /// # Errors
-    ///
-    /// Returns an error if the SQL query is invalid or if the query execution fails.
+    /// - Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn sql(&self, sql: &str) -> Result<DataFrame> {
         self.sql_with_options(sql, SQLOptions::new()).await
     }
 
     // TODO: Docs - mention and link the `sql_with_options` method on SessionContext
     /// # Errors
-    ///
-    /// Returns an error if the SQL query is invalid or if the query execution fails.
+    /// - Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn sql_with_options(&self, sql: &str, options: SQLOptions) -> Result<DataFrame> {
         let state = self.inner.state();
 
@@ -270,9 +286,9 @@ impl std::ops::Deref for ClickHouseSessionContext {
     fn deref(&self) -> &Self::Target { &self.inner }
 }
 
-// TODO: Docs - a LOT more docs here, this is a pretty big needed step
-//
-/// Custom [`ContextProvider`].
+// TODO: Docs
+/// Custom [`ContextProvider`]
+///
 /// Required since `DataFusion` will throw an error on unrecognized functions and the goal is to
 /// preserve the Expr structure.
 pub struct ClickHouseContextProvider {
@@ -377,9 +393,6 @@ impl ContextProvider for ClickHouseContextProvider {
         Ok(provider_as_source(provider))
     }
 
-    /// Create a new CTE work table for a recursive CTE logical plan
-    /// This table will be used in conjunction with a Worktable physical plan
-    /// to read and write each iteration of a recursive CTE
     fn create_cte_work_table(&self, name: &str, schema: SchemaRef) -> Result<Arc<dyn TableSource>> {
         let table = Arc::new(CteWorkTable::new(name, schema));
         Ok(provider_as_source(table))
@@ -413,7 +426,6 @@ impl ContextProvider for ClickHouseContextProvider {
 
     fn options(&self) -> &ConfigOptions { self.state.config_options() }
 
-    // TODO: Does this behave well with the logic above in `get_function_meta`?
     fn udf_names(&self) -> Vec<String> { self.state.scalar_functions().keys().cloned().collect() }
 
     fn udaf_names(&self) -> Vec<String> {
