@@ -967,28 +967,6 @@ mod tests {
         arrow::util::pretty::print_batches(&results)?;
         eprintln!(">>> Multi-table column clickhouse function test passed");
 
-        // -----------------------------
-        // Test lead/lag window functions
-        // NOTE: LAG/LEAD are not recognized by ClickHouse in federation mode
-        //
-        // TODO: Remove - This doesn't even have any clickhouse functions *smh*
-        #[cfg(not(feature = "federation"))]
-        {
-            let query = format!(
-                "SELECT p.id,
-                        p.name,
-                        LAG(p.name, 1) OVER (ORDER BY p.id) as prev_name,
-                        LEAD(p.name, 1) OVER (ORDER BY p.id) as next_name,
-                        FIRST_VALUE(p.name) OVER (ORDER BY p.id) as first_name,
-                        LAST_VALUE(p.name) OVER (ORDER BY p.id ROWS BETWEEN UNBOUNDED PRECEDING \
-                 AND UNBOUNDED FOLLOWING) as last_name
-                FROM clickhouse.{db}.people p"
-            );
-            let results = ctx.sql(&query).await?.collect().await?;
-            arrow::util::pretty::print_batches(&results)?;
-            eprintln!(">>> Lead/lag window functions test passed");
-        }
-
         Ok(())
     }
 
@@ -1249,9 +1227,9 @@ mod tests {
         // Add in-memory table
         common::helpers::add_memory_table_and_data(&ctx)?;
 
-        // TODO: Remove - Uncomment!!!
         // -----------------------------
         // Test deeply nested subqueries
+        //
         // NOTE: This test fails due to DataFusion's correlated subquery limitations
         let query = format!(
             "SELECT
@@ -1339,9 +1317,9 @@ mod tests {
         // table. Modify this to use a join THEN it will be a semantic violation.
         //
         // // Test semantic violation: ClickHouse function with aggregate that changes column
-        // meaning // This should fail because pushing the clickhouse function below the
-        // aggregate would // change the semantic meaning - the mixed functions prevent the
-        // separation of the aggs. //
+        // meaning this should fail because pushing the clickhouse function below the
+        // aggregate would change the semantic meaning - the mixed functions prevent the
+        // separation of the aggs.
         // // TODO: Once clickhouse functions can be separated from df functions, this should be ok,
         // // since the plan contains only a single clickhouse table.
         // let query = format!(
@@ -1367,7 +1345,7 @@ mod tests {
         // assert!(results.is_err(), "Expected GROUP BY semantic violation");
         // eprintln!(">>> GROUP BY semantic violation test passed (correctly failed)\n{results:?}");
 
-        // TODO: Remove - Is this a Sort plan violation?
+        // TODO: Remove - Is this a Sort plan violation? Also, add JOIN
         // let query = format!(
         //     "SELECT p1.name, p2.name as p2_name
         //     FROM clickhouse.{db}.people p1

@@ -1,12 +1,14 @@
-//! TODO: Docs - This module is EXTREMELY important. To fully support `ClickHouse` UDFs, the
-//! [`ClickHouseQueryPlanner`] MUST be used since it provides the [`ClickHouseExtensionPlanner`].
+// TODO: Docs - Improve documentation for this module.
+//! This module contains important structures and utilities. To fully support `ClickHouse` UDFs, the
+//! [`ClickHouseQueryPlanner`] must be used since it provides the [`ClickHouseExtensionPlanner`].
 //!
 //! Additionally note how [`ClickHouseQueryPlanner`] provides `ClickHouseQueryPlanner::with_planner`
 //! to allow stacking planners, ensuring the `ClickHouseQueryPlanner` is on top.
 //!
-//! Equally as important is `ClickHouseSessionContext`. `DataFusion` doesn't support providing a
+//! Equally as important is [`ClickHouseSessionContext`]. `DataFusion` doesn't support providing a
 //! custom `SessionContextProvider` (impl `ContextProvider`). Currently this is the only way to
 //! prevent the "optimization" away of UDFs that are meant to be pushed down to `ClickHouse`.
+/// TEST
 pub mod plan_node;
 pub mod planner;
 
@@ -44,10 +46,16 @@ use crate::udfs::apply::{CLICKHOUSE_APPLY_ALIASES, clickhouse_apply_udf};
 use crate::udfs::clickhouse::{CLICKHOUSE_UDF_ALIASES, clickhouse_udf};
 use crate::udfs::placeholder::PlaceholderUDF;
 
-// TODO: Remove - docs
-// Convenience method for preparing a session context both with federation if the feature is enabled
-// as well as UDF pushdown support. It is called in `ClickHouseSessionContext::new` or
-// `ClickHouseSessionContext::from` as well.
+/// Convenience method (opinionated) for preparing a session context both with federation if the
+/// feature is enabled as well as UDF pushdown support through the custom `Analyzer`. It is called
+/// in [`ClickHouseSessionContext::new`] and [`ClickHouseSessionContext::from`] when creating a new
+/// [`ClickHouseSessionContext`].
+///
+/// NOTE: The setting `enable_ident_normalization` is disabled (on by default) since `ClickHouse`'s
+/// idents are case-sensitive. It's important to note this does NOT correct the problem where
+/// function names are normalized to lowercase.
+///
+/// See: [`datafusion.sql_parser.enable_ident_normalization`](https://datafusion.apache.org/user-guide/configs.html)
 pub fn prepare_session_context(
     ctx: SessionContext,
     extension_planners: Option<Vec<Arc<dyn ExtensionPlanner + Send + Sync>>>,
@@ -61,6 +69,14 @@ pub fn prepare_session_context(
     let ctx = ctx.federate();
     // Pull out state
     let state = ctx.state();
+    // By default, disable `ident normalization`
+    let config = state.config().clone();
+    let config = if config.options().sql_parser.enable_ident_normalization {
+        config.set_bool("datafusion.sql_parser.enable_ident_normalization", false)
+    } else {
+        config
+    };
+    let config = config.set_str("datafusion.sql_parser.dialect", "ClickHouse");
     // Pushdown analyzer rule
     let state_builder = if state
         .analyzer()
@@ -76,6 +92,7 @@ pub fn prepare_session_context(
     // Finally, build the context again passing the ClickHouseQueryPlanner
     let ctx = SessionContext::new_with_state(
         state_builder
+            .with_config(config)
             .with_query_planner(Arc::new(ClickHouseQueryPlanner::new_with_planners(
                 extension_planners.unwrap_or_default(),
             )))
@@ -86,12 +103,13 @@ pub fn prepare_session_context(
     ctx
 }
 
+/// Given a `SessionState`, configure the analyzer rules for the `ClickHouse` session context.
 pub fn configure_analyzer_rules(state: &SessionState) -> Vec<Arc<dyn AnalyzerRule + Send + Sync>> {
     // Pull out analyzer rules
     let mut analyzer_rules = state.analyzer().rules.clone();
 
     // Insert the ClickHouseFunctionPushdown before type coercion.
-    // This datafusion to optimize for the data types expected.
+    // This allows datafusion to optimize for the data types expected.
     let type_coercion = TypeCoercion::default();
     let pos = analyzer_rules.iter().position(|x| x.name() == type_coercion.name()).unwrap_or(0);
 
@@ -100,9 +118,7 @@ pub fn configure_analyzer_rules(state: &SessionState) -> Vec<Arc<dyn AnalyzerRul
     analyzer_rules
 }
 
-// TODO: Docs - LOTS OF DOCS NEEDED HERE!!!
-//
-// Create a custom QueryPlanner to include ClickHouseExtensionPlanner
+/// A custom `QueryPlanner` leveraging [`ClickHouseExtensionPlanner`]
 #[derive(Clone)]
 pub struct ClickHouseQueryPlanner {
     planners: Vec<Arc<dyn ExtensionPlanner + Send + Sync>>,
@@ -182,7 +198,7 @@ impl ClickHouseSessionContext {
     // TODO: Docs - especially mention that using the provided context WILL NOT WORK with pushdown
     pub fn into_session_context(self) -> SessionContext { self.inner }
 
-    // TODO: Docs - mention and link the `sql` method on SessionContext
+    // TODO: Docs - mention and link reference to the `sql` method on SessionContext
     /// # Errors
     ///
     /// Returns an error if the SQL query is invalid or if the query execution fails.
@@ -190,20 +206,19 @@ impl ClickHouseSessionContext {
         self.sql_with_options(sql, SQLOptions::new()).await
     }
 
-    // TODO: Docs - mention and link the `sql_with_options` method on SessionContext
+    // TODO: Docs - mention and link reference to the `sql_with_options` method on SessionContext
     /// # Errors
     ///
     /// Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn sql_with_options(&self, sql: &str, options: SQLOptions) -> Result<DataFrame> {
         let state = self.inner.state();
-
         let statement = state.sql_to_statement(sql, "ClickHouse")?;
         let plan = self.statement_to_plan(&state, statement).await?;
         options.verify_plan(&plan)?;
         self.execute_logical_plan(plan).await
     }
 
-    // TODO: Docs - mention and link the `statement_to_plan` method on SessionContext
+    // TODO: Docs - mention and link reference to the `statement_to_plan` method on SessionContext
     /// # Errors
     /// - Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn statement_to_plan(
@@ -243,7 +258,6 @@ impl ClickHouseSessionContext {
 
     fn get_parser_options(state: &SessionState) -> ParserOptions {
         let sql_parser_options = &state.config().options().sql_parser;
-
         ParserOptions {
             parse_float_as_decimal:             sql_parser_options.parse_float_as_decimal,
             enable_ident_normalization:         sql_parser_options.enable_ident_normalization,
@@ -270,9 +284,8 @@ impl std::ops::Deref for ClickHouseSessionContext {
     fn deref(&self) -> &Self::Target { &self.inner }
 }
 
-// TODO: Docs - a LOT more docs here, this is a pretty big needed step
-//
-/// Custom [`ContextProvider`].
+/// Custom [`ContextProvider`]
+///
 /// Required since `DataFusion` will throw an error on unrecognized functions and the goal is to
 /// preserve the Expr structure.
 pub struct ClickHouseContextProvider {
@@ -302,12 +315,9 @@ impl ClickHouseContextProvider {
         self
     }
 
-    // NOTE: This method normally resides on `SessionState` but since it's `pub(crate)` it must
-    // be reproduced and this is its temporary home until the method is made pub.
-    pub fn resolve_table_ref(
-        &self,
-        table_ref: impl Into<TableReference>,
-    ) -> ResolvedTableReference {
+    /// NOTE: This method normally resides on `SessionState` but since it's `pub(crate)` it must be
+    /// reproduced here.
+    fn resolve_table_ref(&self, table_ref: impl Into<TableReference>) -> ResolvedTableReference {
         let catalog = &self.state.config_options().catalog;
         table_ref.into().resolve(&catalog.default_catalog, &catalog.default_schema)
     }

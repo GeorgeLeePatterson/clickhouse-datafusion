@@ -106,7 +106,7 @@ let ctx = ctx.federate();
 let ctx = ClickHouseSessionContext::from(ctx);
 
 // Build ClickHouse integration
-let builder = ClickHouseBuilder::new("clickhouse://localhost:9000")
+let builder = ClickHouseBuilder::new("http://localhost:9000")
     .configure_arrow_options(|opts| opts.with_strings_as_strings(true))
     .build_catalog(&ctx, Some("clickhouse"))
     .await?;

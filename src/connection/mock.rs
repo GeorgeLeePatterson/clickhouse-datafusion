@@ -40,9 +40,6 @@ impl ClickHouseConnection<'_> {
     #[expect(clippy::unused_async)]
     pub async fn get_schema(&self, table_reference: &TableReference) -> Result<SchemaRef> {
         debug!(%table_reference, "Fetching schema for table");
-        // TODO: Remove
-        // let db = table_reference.schema();
-        // let table = table_reference.table();
         Ok(std::sync::Arc::new(datafusion::arrow::datatypes::Schema::empty()))
     }
 

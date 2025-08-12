@@ -1,36 +1,44 @@
-//! The various builders to make registering, updating, and synching remove `ClickHouse` databases
-//! and `DataFusion` easier.
+//! The various builders to make registering, updating, and synchronizing remote `ClickHouse`
+//! databases and `DataFusion` easier.
 //!
 //! # `ClickHouseBuilder`
 //!
 //! You begin by creating a `ClickHouseBuilder` instance, which allows you to configure various
-//! aspects of the integration, such as the endpoint, authentication, the underlying `ClickHouse`
+//! aspects of the connection, such as the endpoint, authentication, the underlying `ClickHouse`
 //! connection pool, `clickhouse-arrow` `Client` options, schema mapping, and more.
+//!
+//! NOTE: The schema (database) set as the default on the underlying `ClickHouse` client will be set
+//! as the initial schema after calling `ClickHouseBuilder::build_catalog`. This can be changed on
+//! the fly by calling `with_schema` on the catalog builder returned.
 //!
 //! ## Schema Coercion
 //!
-//! You can also specify whether "schema coercion" should occur. If using the full
-//! [`super::context::ClickHouseSessionContext`] and [`super::context::ClickHouseQueryPlanner`],
-//! required if you plan on using `ClickHouse` functions, then the return type provided to the
-//! second argument of the `clickhouse(...)` scalar UDF will specify the expected return type.
+//! You can also specify whether "schema coercion" should occur during streaming of the data
+//! returned by query execution. If using the full [`super::context::ClickHouseSessionContext`] and
+//! [`super::context::ClickHouseQueryPlanner`], required if you plan on using `ClickHouse`
+//! functions, then the return type provided to the second argument of the `clickhouse(...)` scalar
+//! UDFs will specify the expected return type.
 //!
 //! This means you must be exact, otherwise an arrow error will be returned. By configuring schema
 //! coercion, anything that can be coerced via arrow will be coerced, based on the expected schema
-//! of the clickhouse function mentioned above.
+//! of the `clickhouse` function mentioned above.
 //!
-//! Generally this should be avoided, as there is a cost. The cost is incurred during execution,
-//! which means it can have a per `RecordBatch` cost that can be avoided simply by providing the
-//! correct return type to the clickhouse function.
+//! Generally schema conversion should be avoided, as there is a non-zero cost. The cost is incurred
+//! per `RecordBatch` as the results are streamed through `DataFusion`'s execution context, which
+//! means it will have a per `RecordBatch` cost that can be avoided by simply providing the correct
+//! return type to the clickhouse function. But, for non latency-sensitive use cases, this may
+//! provide convenience, especially when dealing with `ClickHouse` higher order functions.
 //!
 //! # `ClickHouseCatalogBuilder`
 //!
-//! Once configured, `ClickHouseCatalogBuilder` can be obtained by calling
-//! `ClickHouseBuilder::build_catalog`. The return of this, the `ClickHouseCatalogBuilder`, can be
-//! used to create tables on the remote schema, register existing tables under aliases, and refresh
-//! `DataFusion`'s internal catalog to keep the two in sync.
+//! After configuration of the `ClickHouseBuilder`, a `ClickHouseCatalogBuilder` will be obtained by
+//! calling `ClickHouseBuilder::build_catalog`. The `ClickHouseCatalogBuilder` returned can then be
+//! used to set the schema being targets, create tables on the remote schema, register existing
+//! tables under aliases, and refresh `DataFusion`'s internal catalog to keep the two in sync.
 //!
-//! Refer to e2e tests in the repository for detailed examples on its usage, especially the
-//! associated "helper" functions.
+//! Refer to e2e tests in the repository for detailed examples on its usage, especially the tests's
+//! associated "helper" functions. The `basic` example shows a basic usage of the
+//! `ClickHouseBuilder` that suffices for most use cases.
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -68,8 +76,14 @@ pub fn default_arrow_options() -> ArrowOptions {
 
 /// Entrypoint builder for `ClickHouse` and `DataFusion` integration.
 ///
-/// Ensures `ClickHouse` udfs are registered in [`SessionContext`], the pool is attached to the
-/// [`ClickHouseTableProviderFactory`], and `ClickHouse` is reachable by the provided endpoint.
+/// Ensures `DataFusion` default UDFs as well as `ClickHouse` udfs are registered in
+/// [`SessionContext`], the pool is attached to the [`ClickHouseTableProviderFactory`], and
+/// `ClickHouse` is reachable by the provided endpoint.
+///
+/// NOTE: While `clickhouse_arrow` defaults to binary encoding for strings (via
+/// [`clickhouse_arrow::ArrowOptions::strings_as_strings`] == false), for `DataFusion` the
+/// default is `true`. This can be disabled by modifying the setting via
+/// [`ClickHouseBuilder::configure_arrow_options`]
 pub struct ClickHouseBuilder {
     endpoint:     Destination,
     pool_builder: ArrowConnectionPoolBuilder,
@@ -81,10 +95,6 @@ impl ClickHouseBuilder {
     /// [`clickhouse_arrow::ClientBuilder`], the [`clickhouse_arrow::ArrowPoolBuilder`], and be
     /// "built" into a [`ClickHouseCatalogBuilder`] for interacting with `ClickHouse` databases and
     /// tables.
-    ///
-    /// NOTE: While `clickhouse_arrow` defaults to binary encoding for strings (via
-    /// [`clickhouse_arrow::ArrowOptions::strings_as_strings`] == false), for `DataFusion` the
-    /// default is `true`.
     pub fn new(endpoint: impl Into<Destination>) -> Self {
         let endpoint = endpoint.into();
         let pool_builder = ArrowConnectionPoolBuilder::new(endpoint.clone())
@@ -130,7 +140,10 @@ impl ClickHouseBuilder {
     //
     /// `clickhouse_arrow` defaults to binary encoding for
     /// [`datafusion::arrow::datatypes::DataType::Utf8`] columns, the default is inverted for
-    /// `DataFusion`. This disables that change and uses binary encoding for strings.
+    /// `DataFusion`. This method allows disabling that change to use binary encoding for strings,
+    /// among other configuration options.
+    ///
+    /// See: [`clickhouse_arrow::ArrowOptions`]
     #[must_use]
     pub fn configure_arrow_options(mut self, f: impl FnOnce(ArrowOptions) -> ArrowOptions) -> Self {
         self.pool_builder = self.pool_builder.configure_client(|c| {

@@ -99,7 +99,7 @@ impl SqlTable {
         Ok(Self::new_with_schema_unchecked(name, pool, schema, table_reference))
     }
 
-    // TODO: Remove - docs -
+    // TODO: Remove - docs
     pub fn new_with_schema_unchecked(
         name: &str,
         pool: Arc<ClickHouseConnectionPool>,
@@ -248,7 +248,7 @@ impl Display for SqlTable {
 static ONE_COLUMN_SCHEMA: LazyLock<SchemaRef> =
     LazyLock::new(|| Arc::new(Schema::new(vec![Field::new("1", DataType::Int64, true)])));
 
-/// Create a new [`SqlTable`] from a name and a [`ClickHouseConnectionPool`].
+/// Project a schema safely, taking into account empty columns
 ///
 /// # Errors
 /// - Returns an error if the projection fails

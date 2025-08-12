@@ -1,5 +1,6 @@
-//! TODO: Remove - `ClickHouseUDF` is a Higher Order Function, talk about this, use `apply` as
-//! examples
+// TODO: Remove - better docs
+//! Custom `clickhouse` UDF implementation that allows intelligent "pushdown" to execute
+//! `ClickHouse` functions directly on the remote server.
 use datafusion::arrow::datatypes::{DataType, FieldRef};
 use datafusion::common::{internal_err, not_impl_err};
 use datafusion::error::Result;

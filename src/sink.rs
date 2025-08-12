@@ -12,8 +12,7 @@ use futures_util::StreamExt;
 use crate::connection::ClickHouseConnectionPool;
 
 // TODO: Docs
-//
-/// [`DataSink`] for `ClickHouse` [`datafusion::datasource::TableProvider::insert_into`]
+/// [`datafusion::datasource::sink::DataSink`] for `ClickHouse`
 #[derive(Debug)]
 pub struct ClickHouseDataSink {
     #[cfg_attr(feature = "mocks", expect(unused))]

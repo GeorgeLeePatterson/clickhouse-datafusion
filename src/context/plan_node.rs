@@ -1,3 +1,5 @@
+//! A `UserDefinedLogicalNodeCore` implementation for wrapping largest sub-trees of a `DataFusion`
+//! logical plan for execution on `ClickHouse` directly.
 use std::sync::Arc;
 
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};

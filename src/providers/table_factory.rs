@@ -123,7 +123,7 @@ impl ClickHouseTableProviderFactory {
 
     // TODO: Docs
     /// Attach an existing [`ClickHouseConnectionPool`] to the factory by providing
-    /// [`ClickHouseOptions`] which will be built into a [`ClickHouseConnectionPool`]
+    /// [`ArrowConnectionPoolBuilder`] which will be built into a [`ClickHouseConnectionPool`]
     ///
     /// # Errors
     /// - Returns an error if creating the `ClickHouseConnectionPool` fails.

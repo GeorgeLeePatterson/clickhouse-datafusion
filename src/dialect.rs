@@ -1,3 +1,4 @@
+//! A custom [`UnparserDialect`] for `ClickHouse`.
 use datafusion::common::{plan_datafusion_err, plan_err};
 use datafusion::error::Result;
 use datafusion::prelude::*;
@@ -12,7 +13,6 @@ use crate::udfs::apply::ClickHouseApplyRewriter;
 use crate::udfs::clickhouse::CLICKHOUSE_UDF_ALIASES;
 use crate::udfs::eval::CLICKHOUSE_EVAL_UDF_ALIASES;
 
-// TODO: Docs
 /// A custom [`UnparserDialect`] for `ClickHouse`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ClickHouseDialect;
@@ -26,7 +26,7 @@ impl UnparserDialect for ClickHouseDialect {
         func_name: &str,
         args: &[Expr],
     ) -> Result<Option<ast::Expr>> {
-        // First check for pushdown/lambda UDFs
+        // First check for `clickhouse`/lambda UDFs
         if CLICKHOUSE_UDF_ALIASES.contains(&func_name) {
             let Some(inner_expr) = args.first() else {
                 return plan_err!("`clickhouse` expects a first argument, no arg provided");

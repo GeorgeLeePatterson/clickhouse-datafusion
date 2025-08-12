@@ -1,4 +1,9 @@
-//! TODO: Remove - Important! explain how `apply` and `lambda` are only used when nested
+// TODO: Remove - Important! explain how `apply` and `lambda` are only used when nested
+//! `ScalarUDFImpl` for [`ClickHouseApplyUDF`]
+//!
+//! Currently this provides little value over using a `ClickHouse` lambda function directly in
+//! [`super::clickhouse::ClickHouseUDF`] since both will be parsed the same. This UDF will be
+//! expanded to allow using it directly similarly to the `clickhouse` function.
 use std::collections::HashMap;
 use std::str::FromStr;
 

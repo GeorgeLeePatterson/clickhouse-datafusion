@@ -1,3 +1,4 @@
+//! An `ExtensionPlanner` implementation for executing [`ClickHouseFunctionNode`]s
 use std::sync::Arc;
 
 use datafusion::common::plan_datafusion_err;

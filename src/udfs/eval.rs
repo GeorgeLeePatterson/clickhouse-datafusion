@@ -28,8 +28,8 @@ fn get_doc() -> &'static Documentation { &DOCUMENTATION }
 // TODO: Docs - explain how this can be used if the full custom ClickHouseQueryPlanner CANNOT be
 // used. This provides an alternative syntax for specifying clickhouse functions
 //
-/// [`ClickHouseFunc`] is an escape hatch to pass syntax that `DataFusion` does not support directly
-/// to `ClickHouse`.
+/// [`ClickHouseEval`] is an escape hatch to pass syntax that `DataFusion` does not support directly
+/// to `ClickHouse` using the string representation only.
 #[derive(Debug)]
 pub struct ClickHouseEval {
     signature: Signature,

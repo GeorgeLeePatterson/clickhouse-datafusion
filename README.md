@@ -12,13 +12,14 @@ Built on [clickhouse-arrow](https://github.com/GeorgeLeePatterson/clickhouse-arr
 
 ## Why clickhouse-datafusion?
 
-- **🚀 High Performance**: Built on clickhouse-arrow for optimal data transfer and Arrow format efficiency
+- **🚀 High Performance**: Built on [clickhouse-arrow](https://github.com/GeorgeLeePatterson/clickhouse-arrow) for optimal data transfer and Arrow format efficiency
+- **⚡ Connection Pooling**: clickhouse-arrow provides connection pooling for scalability
 - **🔗 Federation Support**: Join `ClickHouse` tables with other `DataFusion` sources seamlessly
+- **⛓️ Two-tier Execution**: Delegate complexity to `ClickHouse` leveraging additional optimizations at the edge
 - **🛠️ `ClickHouse` UDFs**: Direct access to `ClickHouse` functions in `DataFusion` SQL queries
 - **📊 Advanced Analytics**: Support for window functions, CTEs, subqueries, and complex JOINs
-- **⚡ Connection Pooling**: bb8-based connection pooling for scalability
 - **🎯 Arrow Native**: Native Apache Arrow integration for zero-copy data processing
-- **🔄 Schema Flexibility**: Optional schema coercion for type compatibility
+- **🔄 Schema Flexibility**: Optional schema coercion after fetching data for automatic type compatibility
 
 ## Quick Start
 
@@ -42,7 +43,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = ClickHouseSessionContext::from(SessionContext::new());
 
     // Build ClickHouse integration
-    let clickhouse = ClickHouseBuilder::new("clickhouse://localhost:9000")
+    let clickhouse = ClickHouseBuilder::new("http://localhost:9000")
+        .configure_client(|c| c.with_username("clickhouse"))
         .configure_arrow_options(|opts| opts.with_strings_as_strings(true))
         .build_catalog(&ctx, Some("clickhouse"))
         .await?;
@@ -54,11 +56,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clickhouse = clickhouse.with_schema("my_database").await?;
 
     // Register existing table
-    let clickhouse = clickhouse.register_existing_table("my_database").await?;
+    let clickhouse = clickhouse.register_existing_table("my_table").await?;
 
-    // Create a new table on the remove server and get the catalog builder back
-    let clickhouse =
-        clickhouse.with_new_table("new_table", ClickHouseEngine::MergeTree).create(ctx).await?;
+    // Create a new table on the remote server and get the catalog builder back
+    let clickhouse = clickhouse
+        .with_new_table("new_table", ClickHouseEngine::MergeTree, schema)
+        .create(ctx)
+        .await?;
 
     // Finally build the catalog so the changes take effect (in DataFusion)
     let _catalog = clickhouse.build(&ctx).await?;
@@ -71,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### With Federation (Cross-Database Queries)
+### With Federation (Cross-DBMS Queries)
 
 ```rust,ignore
 use clickhouse_arrow::prelude::ClickHouseEngine;
@@ -84,36 +88,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Enable federation for cross-database queries
     let ctx = SessionContext::new().federate();
 
-    // Optionally enable the full ClickHouseQueryPlanner
+    // Optionally enable the full ClickHouseSessionContext with ClickHouseQueryPlanner
     //
     // NOTE: Not required, provides a custom QueryPlanner and Analyzer with optional federation.
     let ctx = ClickHouseSessionContext::from(ctx);
 
-    // Set up ClickHouse catalog
-    let clickhouse = ClickHouseBuilder::new("clickhouse://localhost:9000")
+    // Configure the underlying connection and initialize the ClickHouse catalog
+    let clickhouse = ClickHouseBuilder::new("http://localhost:9000")
+        // The default database set on the client is used initially by the returned catalog builder.
+        .configure_client(|c| c.with_username("clickhouse").with_default_database("other_db"))
         .build_catalog(&ctx, Some("clickhouse")) // default catalog name
         .await?;
 
     // Create a table on the remote server and build the catalog (so changes are registered in
-    // DataFusion). `clickhouse` can continue to be used to create as many tables as needed. But
-    // remember to always `build` the catalog when you want to interact with it via DataFusion
-    // queries.
+    // DataFusion).
+    //
+    // The 'clickhouse' catalog returned from the above builder can continue to be used to create as
+    // many tables as needed. But remember to always `build` the catalog when you want to interact
+    // with it via DataFusion queries, using either 'build' or 'build_schema'.
     let _clickhouse_catalog_provider = clickhouse
+        // Change the default database from 'other_db' to 'analytics'
         .with_schema("analytics")
         .await?
-        // Create users table
+        // Create users table on the database 'analytics'
         .with_new_table(
+            // Table name
             "user_events",
+            // Engine - ClickHouseEngine::default() could be used as well.
             ClickHouseEngine::MergeTree,
-            // Define schemas for user table
+            // Define the schema for user_events table
             Arc::new(Schema::new(vec![
                 Field::new("user_id", DataType::Int32, false),
                 Field::new("event_count", DataType::UInt32, false),
             ])),
         )
+        // Set `clickhouse_arrow::CreateOptions` for `user_events` table
         .update_create_options(|opts| opts.with_order_by(&["id".into()]))
+        // Finally create the table
         .create(ctx)
         .await?
+        // And then "build" the catalog, synchronizing the remote schema with DataFusion
         .build(&ctx)
         .await?;
 
@@ -144,10 +158,10 @@ Access `ClickHouse`'s powerful functions directly in `DataFusion` SQL:
 
 ```sql
 -- Mathematical functions
-SELECT clickhouse(exp(price), 'Float64') as exponential_price FROM products;
+SELECT clickhouse(sigmoid(price), 'Float64') as price_sigmoid FROM products;
 
 -- String functions
-SELECT clickhouse(upper(name), 'Utf8') as uppercase_name FROM users;
+SELECT clickhouse(`base64Encode`(name), 'Utf8') as b64_name FROM users;
 
 -- Array functions
 SELECT clickhouse(`arrayJoin`(tags), 'Utf8') as individual_tags FROM articles;
@@ -203,34 +217,30 @@ GROUP BY event_type;
 ### Key Features
 
 #### Schema Management
-```rust
-// Create tables from Arrow schemas
+```rust,ignore
+// Create tables from Arrow schema
 let schema = Schema::new(vec![
     Field::new("id", DataType::Int64, false),
     Field::new("name", DataType::Utf8, false),
 ]);
 
-builder.create_table_if_not_exists(
-    "my_database.users",
-    &schema,
-    CreateOptions::from_engine("MergeTree")
-).await?;
+clickhouse.with_new_table("users", "MergeTree".into(), schema).await?;
 ```
 
 #### Connection Pooling
-```rust
-let builder = ClickHouseBuilder::new("clickhouse://localhost:9000")
+```rust,ignore
+let clickhouse = ClickHouseBuilder::new("http://localhost:9000")
     .configure_pool(|pool| pool.max_size(10))
     .configure_client(|client| client.with_compression(CompressionMethod::LZ4))
-    .build_catalog(&ctx, Some("clickhouse"))
+    .build_catalog(&ctx, None)
     .await?;
 ```
 
 #### Schema Coercion
 ```rust
-let builder = ClickHouseBuilder::new("clickhouse://localhost:9000")
+let builder = ClickHouseBuilder::new("http://localhost:9000")
     .with_schema_coercion(true) // Enable automatic type coercion
-    .build_catalog(&ctx, Some("clickhouse"))
+    .build_catalog(&ctx, None)
     .await?;
 ```
 
@@ -297,7 +307,7 @@ just coverage-lcov     # LCOV for CI
 
 ## Examples
 
-See the [examples](examples/) directory for complete working examples:
+See the [examples](examples/) directory for a complete working example:
 
 - **Basic Integration**: Simple `ClickHouse` querying
 - **Federation**: Cross-database joins
@@ -306,8 +316,8 @@ See the [examples](examples/) directory for complete working examples:
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! Please see [CONTRIBUTING.md](https://github.com/GeorgeLeePatterson/clickhouse-datafusion/blob/main/CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+Licensed under the Apache License, Version 2.0. See [LICENSE](https://github.com/GeorgeLeePatterson/clickhouse-datafusion/blob/main/LICENSE) for details.

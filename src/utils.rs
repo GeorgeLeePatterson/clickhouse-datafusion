@@ -20,7 +20,7 @@ pub fn register_builtins(ctx: &SessionContext) {
     super::udfs::register_clickhouse_functions(ctx);
 }
 
-pub mod analyze {
+pub(crate) mod analyze {
     use std::collections::HashMap;
 
     use datafusion::common::tree_node::{
@@ -35,7 +35,7 @@ pub mod analyze {
     ///
     /// # Panics
     /// - Does not panic, no error is returned during traversal transformation
-    pub fn push_exprs_below_subquery(
+    pub(crate) fn push_exprs_below_subquery(
         exprs: Vec<Expr>,
         subquery_alias: &SubqueryAlias,
     ) -> Vec<Expr> {
