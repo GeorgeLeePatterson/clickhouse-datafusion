@@ -32,12 +32,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
-
     - name: Install Rust
       uses: dtolnay/rust-toolchain@master
       with:
@@ -67,7 +61,7 @@ jobs:
       with:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-        
+
     - name: Configure Git for private dependencies
       run: |
         git config --global url."https://github.com/".insteadOf "git@github.com:"
@@ -75,36 +69,73 @@ jobs:
 
     # NOTE: Nightly is always used since rustfmt requires it for some settings
     - name: Check formatting
+      if: matrix.rust == 'stable'
       run: cargo +nightly fmt -- --check
 
     - name: Run clippy
+      timeout-minutes: 15
       run: |
         if [[ "${{ matrix.rust }}" == "nightly" ]]; then
+          echo "Fetching dependencies first..."
+          cargo +nightly fetch --verbose
+          echo "Running clippy..."
           cargo +nightly clippy --all-features --all-targets
         else
           cargo +stable clippy --all-features --all-targets -- -D warnings
         fi
 
-  test:
-    name: Test
+  test-unit:
+    name: Unit Tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          # Unit tests - all feature combinations
-          - test-type: "unit"
-            features: "test-utils,mocks"
-          - test-type: "unit" 
-            features: "test-utils"
-          - test-type: "unit"
-            features: "test-utils,mocks,federation"
-          - test-type: "unit"
-            features: "test-utils,federation"
-          # Integration tests - only federation vs no federation
-          - test-type: "integration"
-            features: "test-utils"
-          - test-type: "integration"
-            features: "test-utils,federation"
+        features:
+          - "test-utils,mocks"
+          - "test-utils"
+          - "test-utils,mocks,federation"
+          - "test-utils,federation"
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.features }}
+
+    - name: Configure Git for private dependencies
+      run: |
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+        git config --global advice.detachedHead false
+
+    - name: Run unit tests
+      run: |
+        CLICKHOUSE_NATIVE_DEBUG_ARROW= RUST_LOG= cargo test --lib \
+          -F ${{ matrix.features }} -- --nocapture --show-output
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - "test-utils"
+          - "test-utils,federation"
     steps:
     - uses: actions/checkout@v4
 
@@ -133,21 +164,14 @@ jobs:
       uses: actions/cache@v4
       with:
         path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-        
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.features }}
+
     - name: Configure Git for private dependencies
       run: |
         git config --global url."https://github.com/".insteadOf "git@github.com:"
         git config --global advice.detachedHead false
 
-    - name: Run unit tests
-      if: matrix.test-type == 'unit'
-      run: |
-        CLICKHOUSE_NATIVE_DEBUG_ARROW= RUST_LOG= cargo test --lib \
-          -F ${{ matrix.features }} -- --nocapture --show-output
-
     - name: Run integration tests
-      if: matrix.test-type == 'integration'
       run: |
         CLICKHOUSE_NATIVE_DEBUG_ARROW= RUST_LOG= cargo test \
           -F ${{ matrix.features }} --test "e2e" -- --nocapture --show-output
@@ -203,14 +227,15 @@ jobs:
   # Summary job that branch protection can depend on
   ci-success:
     name: CI Success
-    needs: [check, test, coverage, security]
+    needs: [check, test-unit, test-integration, coverage, security]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check if all jobs succeeded
         run: |
           if [[ "${{ needs.check.result }}" != "success" ||
-                "${{ needs.test.result }}" != "success" ||
+                "${{ needs.test-unit.result }}" != "success" ||
+                "${{ needs.test-integration.result }}" != "success" ||
                 "${{ needs.coverage.result }}" != "success" ||
                 "${{ needs.security.result }}" != "success" ]]; then
             echo "One or more jobs failed"
