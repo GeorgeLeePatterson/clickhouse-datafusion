@@ -248,6 +248,8 @@ let builder = ClickHouseBuilder::new("http://localhost:9000")
 
 When the `federation` feature is enabled (default), clickhouse-datafusion can join `ClickHouse` tables with other `DataFusion` sources:
 
+> **Note**: The current release uses `datafusion-federation` v0.4.7 from crates.io for publishing compatibility. This version has a known issue with `UNNEST` operations due to an upstream DataFusion bug in expression handling. If you need `UNNEST` support in federated queries, please track [PR #135](https://github.com/datafusion-contrib/datafusion-federation/pull/135) for the fix.
+
 ```sql
 -- Join ClickHouse with Parquet files
 SELECT

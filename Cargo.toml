@@ -42,11 +42,10 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # NOTE: There's a current "TODO" to enforce the compatibility fully, but updates seem to lag
 # datafusion-table-providers = { version = "0.6", optional = true }
 
-# TODO: Remove this when upstream PR has been merged
-# ref: [PR #135](https://github.com/datafusion-contrib/datafusion-federation/pull/135)
+# Note: Using crates.io version for publishing compatibility
+# Once PR #135 is merged upstream, we can update this dependency
 [dependencies.datafusion-federation]
-git = "https://github.com/GeorgeLeePatterson/datafusion-federation"
-branch = "fix-unnest-with-new-exprs"
+version = "0.4.7"
 features = ["sql"]
 optional = true
 

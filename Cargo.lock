@@ -1394,8 +1394,9 @@ dependencies = [
 
 [[package]]
 name = "datafusion-federation"
-version = "0.4.7"
-source = "git+https://github.com/GeorgeLeePatterson/datafusion-federation?branch=fix-unnest-with-new-exprs#86fca10685162c6911feada5d453a40e776fcaa5"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c34a9c0dfabcefa3619a3593b23c7f63f14caa7c5e8bfdd82c5948140483cd4"
 dependencies = [
  "arrow-json",
  "async-stream",
