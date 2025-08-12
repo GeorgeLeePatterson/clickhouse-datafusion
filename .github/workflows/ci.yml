@@ -24,65 +24,24 @@ jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - stable
-          - nightly
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ matrix.rust }}
-        components: rustfmt, clippy
+        components: clippy
 
-    - name: Install nightly for formatting
-      if: matrix.rust == 'stable'
+    - name: Install Rust nightly (for formatting)
       uses: dtolnay/rust-toolchain@nightly
       with:
         components: rustfmt
 
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo index
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo build
-      uses: actions/cache@v4
-      with:
-        path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Configure Git for private dependencies
-      run: |
-        git config --global url."https://github.com/".insteadOf "git@github.com:"
-        git config --global advice.detachedHead false
-
-    # NOTE: Nightly is always used since rustfmt requires it for some settings
     - name: Check formatting
-      if: matrix.rust == 'stable'
       run: cargo +nightly fmt -- --check
 
     - name: Run clippy
-      timeout-minutes: 15
-      run: |
-        if [[ "${{ matrix.rust }}" == "nightly" ]]; then
-          echo "Fetching dependencies first..."
-          cargo +nightly fetch --verbose
-          echo "Running clippy..."
-          cargo +nightly clippy --all-features --all-targets
-        else
-          cargo +stable clippy --all-features --all-targets -- -D warnings
-        fi
+      run: cargo +stable clippy --all-features --all-targets -- -D warnings
 
   test-unit:
     name: Unit Tests
@@ -116,12 +75,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.features }}
-
-    - name: Configure Git for private dependencies
-      run: |
-        git config --global url."https://github.com/".insteadOf "git@github.com:"
-        git config --global advice.detachedHead false
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ replace(matrix.features, ',', '-') }}
 
     - name: Run unit tests
       run: |
@@ -164,12 +118,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.features }}
-
-    - name: Configure Git for private dependencies
-      run: |
-        git config --global url."https://github.com/".insteadOf "git@github.com:"
-        git config --global advice.detachedHead false
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ replace(matrix.features, ',', '-') }}
 
     - name: Run integration tests
       run: |
