@@ -148,9 +148,9 @@ prepare-release version:
     # Create release branch
     git checkout -b "release-v{{version}}"
 
-    # Update workspace version in root Cargo.toml (only in [workspace.package] section)
-    # This uses a more specific pattern to only match the version under [workspace.package]
-    awk '/^\[workspace\.package\]/ {in_workspace=1} in_workspace && /^version = / {gsub(/"[^"]*"/, "\"{{version}}\""); in_workspace=0} {print}' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+    # Update version in root Cargo.toml (in [package] section)
+    # This uses a more specific pattern to only match the version under [package]
+    awk '/^\[package\]/ {in_package=1} in_package && /^version = / {gsub(/"[^"]*"/, "\"{{version}}\""); in_package=0} {print}' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
 
     # Update clickhouse-datafusion version references in README files (if they exist)
     # Look for patterns like: clickhouse-datafusion = "0.1.1" or clickhouse-datafusion = { version = "0.1.1"

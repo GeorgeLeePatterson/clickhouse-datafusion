@@ -1,6 +1,6 @@
 [package]
 name = "clickhouse-datafusion"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["George Lee Patterson <patterson.george@gmail.com>"]
 description = "High-performance ClickHouse integration for Apache DataFusion with federation support"
