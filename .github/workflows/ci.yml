@@ -7,8 +7,21 @@ concurrency:
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+    - '**.md'
+    - 'docs/**'
+    - '.claude/**'
+    - '.gitignore'
+    - '.justfile'
+    - 'LICENSE'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+    - '**.md'
+    - 'docs/**'
+    - '.claude/**'
+    - '.gitignore'
+    - 'LICENSE'
   workflow_dispatch:
 
 permissions:
@@ -182,12 +195,23 @@ jobs:
     steps:
       - name: Check if all jobs succeeded
         run: |
+          # If all jobs were skipped (due to paths-ignore), that's success
+          if [[ "${{ needs.check.result }}" == "skipped" && 
+                "${{ needs.test-unit.result }}" == "skipped" && 
+                "${{ needs.test-integration.result }}" == "skipped" && 
+                "${{ needs.coverage.result }}" == "skipped" && 
+                "${{ needs.security.result }}" == "skipped" ]]; then
+            echo "All jobs skipped - docs only change ✅"
+            exit 0
+          fi
+          
+          # Otherwise check that all jobs succeeded
           if [[ "${{ needs.check.result }}" != "success" ||
                 "${{ needs.test-unit.result }}" != "success" ||
                 "${{ needs.test-integration.result }}" != "success" ||
                 "${{ needs.coverage.result }}" != "success" ||
                 "${{ needs.security.result }}" != "success" ]]; then
-            echo "One or more jobs failed"
+            echo "One or more jobs failed ❌"
             exit 1
           fi
-          echo "All CI jobs passed successfully!"
+          echo "All CI jobs passed successfully! ✅"

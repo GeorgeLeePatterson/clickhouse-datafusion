@@ -2,9 +2,14 @@
 
 documentation:
   - changed-files:
-    - any-glob-to-any-file: 
+    - any-glob-to-any-file:
       - '**/*.md'
       - 'docs/**'
+
+release:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'RELEASE_NOTES.md'
 
 dependencies:
   - changed-files:
