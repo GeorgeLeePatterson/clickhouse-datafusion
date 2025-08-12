@@ -46,13 +46,13 @@ A comprehensive example showcasing:
 
 Examples automatically enable the required features:
 - `test-utils`: Enables testcontainer support for ClickHouse
-- `federation`: Enables cross-database query capabilities (enabled by default)
+- `federation`: Enables cross-database query capabilities
 
 ## Output
 
 The basic example produces output showing:
 1. Container setup logs
-2. Table creation and data insertion confirmations  
+2. Table creation and data insertion confirmations
 3. Query results formatted as ASCII tables
 4. Summary of demonstrated features
 

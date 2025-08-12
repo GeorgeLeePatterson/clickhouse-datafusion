@@ -246,7 +246,7 @@ let builder = ClickHouseBuilder::new("http://localhost:9000")
 
 ## Federation Support
 
-When the `federation` feature is enabled (default), clickhouse-datafusion can join `ClickHouse` tables with other `DataFusion` sources:
+When the `federation` feature is enabled, clickhouse-datafusion can join `ClickHouse` tables with other `DataFusion` sources:
 
 > **Note**: The current release uses `datafusion-federation` v0.4.7 from crates.io for publishing compatibility. This version has a known issue with `UNNEST` operations due to an upstream DataFusion bug in expression handling. If you need `UNNEST` support in federated queries, please track [PR #135](https://github.com/datafusion-contrib/datafusion-federation/pull/135) for the fix.
 
@@ -279,7 +279,7 @@ GROUP BY segment;
 ## Features
 
 - **Default**: Core functionality with `ClickHouse` integration
-- **federation**: Enable cross-database queries (enabled by default)
+- **federation**: Enable cross-database queries
 - **cloud**: `ClickHouse` Cloud support
 - **test-utils**: Testing utilities for development
 

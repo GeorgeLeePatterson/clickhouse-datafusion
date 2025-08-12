@@ -22,7 +22,7 @@ pub use connection::*;
 // The simplest way to use `ClickHouse` in `DataFusion` is to use the builder
 // [`ClickHouseBuilder`].
 //
-// If the "federation" feature is enabled (enabled by default) then `ClickHouse` databases and
+// If the "federation" feature is enabled then `ClickHouse` databases and
 // tables can be queried and joined across non-ClickHouse sources.
 pub use context::*;
 pub use providers::*;

@@ -126,7 +126,7 @@ let builder = ClickHouseBuilder::new("http://localhost:9000")
 
 ### Development Notes
 
-- Feature flags: `federation` (enabled by default), `cloud`, `test-utils`, `mocks`
+- Feature flags: `federation`, `cloud`, `test-utils`, `mocks`
 - Requires Rust 2024 edition
 - Uses DataFusion 49+ for latest query planning features
 - Extensive clippy configuration in clippy.toml
