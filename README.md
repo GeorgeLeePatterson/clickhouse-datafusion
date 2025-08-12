@@ -216,17 +216,6 @@ GROUP BY event_type;
 
 ### Key Features
 
-#### Schema Management
-```rust,ignore
-// Create tables from Arrow schema
-let schema = Schema::new(vec![
-    Field::new("id", DataType::Int64, false),
-    Field::new("name", DataType::Utf8, false),
-]);
-
-clickhouse.with_new_table("users", "MergeTree".into(), schema).await?;
-```
-
 #### Connection Pooling
 ```rust,ignore
 let clickhouse = ClickHouseBuilder::new("http://localhost:9000")
@@ -242,6 +231,17 @@ let builder = ClickHouseBuilder::new("http://localhost:9000")
     .with_schema_coercion(true) // Enable automatic type coercion
     .build_catalog(&ctx, None)
     .await?;
+```
+
+#### Schema Management
+```rust,ignore
+// Create tables from Arrow schema
+let schema = Schema::new(vec![
+    Field::new("id", DataType::Int64, false),
+    Field::new("name", DataType::Utf8, false),
+]);
+
+clickhouse.with_new_table("users", "MergeTree".into(), schema).create(&ctx).await?;
 ```
 
 ## Federation Support
