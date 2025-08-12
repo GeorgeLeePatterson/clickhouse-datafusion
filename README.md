@@ -278,7 +278,7 @@ GROUP BY segment;
 
 ## Features
 
-- **Default**: Core functionality with `ClickHouse` integration
+- **default**: Core functionality with `ClickHouse` integration
 - **federation**: Enable cross-database queries
 - **cloud**: `ClickHouse` Cloud support
 - **test-utils**: Testing utilities for development
