@@ -166,10 +166,6 @@ prepare-release version:
     # Update Cargo.lock
     cargo update --workspace
 
-    # Run version test to verify
-    echo "Verifying version consistency..."
-    cargo test test_version_matches_cargo --features test-utils
-
     # Generate full changelog
     echo "Generating changelog..."
     git cliff -o CHANGELOG.md

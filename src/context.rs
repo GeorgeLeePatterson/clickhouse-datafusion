@@ -51,9 +51,9 @@ use crate::udfs::placeholder::PlaceholderUDF;
 /// in [`ClickHouseSessionContext::new`] and [`ClickHouseSessionContext::from`] when creating a new
 /// [`ClickHouseSessionContext`].
 ///
-/// NOTE: The setting `enable_ident_normalization` is disabled (on by default) since `ClickHouse`'s
-/// idents are case-sensitive. It's important to note this does NOT correct the problem where
-/// function names are normalized to lowercase.
+/// NOTE: The setting `enable_ident_normalization` is enabled by default, but `ClickHouse` idents
+/// are case-sensitive. It's important to note this settings does NOT correct the problem where
+/// function names are normalized to lowercase, so backticks are still needed.
 ///
 /// See: [`datafusion.sql_parser.enable_ident_normalization`](https://datafusion.apache.org/user-guide/configs.html)
 pub fn prepare_session_context(
@@ -69,13 +69,14 @@ pub fn prepare_session_context(
     let ctx = ctx.federate();
     // Pull out state
     let state = ctx.state();
-    // By default, disable `ident normalization`
     let config = state.config().clone();
-    let config = if config.options().sql_parser.enable_ident_normalization {
-        config.set_bool("datafusion.sql_parser.enable_ident_normalization", false)
-    } else {
-        config
-    };
+    // TODO: Re-enable if function's opt into ident normalization configuration
+    // // By default, disable `ident normalization`
+    // let config = if config.options().sql_parser.enable_ident_normalization {
+    //     config.set_bool("datafusion.sql_parser.enable_ident_normalization", false)
+    // } else {
+    //     config
+    // };
     let config = config.set_str("datafusion.sql_parser.dialect", "ClickHouse");
     // Pushdown analyzer rule
     let state_builder = if state
