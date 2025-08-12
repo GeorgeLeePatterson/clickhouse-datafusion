@@ -19,11 +19,8 @@ federation = ["dep:datafusion-federation"]
 cloud = ["clickhouse-arrow/cloud"]
 
 # For testing and examples
-test-utils = [
-    "clickhouse-arrow/test-utils",
-    "dep:tokio",
-]
-mocks = [] # Used for unit tests and connection mocking
+test-utils = ["clickhouse-arrow/test-utils", "dep:tokio"]
+mocks = []                                                # Used for unit tests and connection mocking
 
 [dependencies]
 async-trait = "0.1"
@@ -46,7 +43,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # Note: Using crates.io version for publishing compatibility
 # Once PR #135 is merged upstream, we can update this dependency
 [dependencies.datafusion-federation]
-version = "0.4.7"
+version = "0.4.8"
 features = ["sql"]
 optional = true
 
