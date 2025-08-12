@@ -75,7 +75,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ replace(matrix.features, ',', '-') }}
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ github.job }}-${{ strategy.job-index }}
 
     - name: Run unit tests
       run: |
@@ -118,7 +118,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ replace(matrix.features, ',', '-') }}
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}-${{ github.job }}-${{ strategy.job-index }}
 
     - name: Run integration tests
       run: |
