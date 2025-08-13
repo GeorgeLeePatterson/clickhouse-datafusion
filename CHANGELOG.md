@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Updates prelude to re-export more, minor cleanup to docs ([#16](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/16)) ([bb5bbb0](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/bb5bbb0560f956ce6df44fa086c6831b99a2d706))
+
+## [0.1.1] - 2025-08-12
+
 ### Documentation
 
 - Removes incorrect 'by default' around federation feature ([#9](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/9)) ([dda5ebb](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/dda5ebb4bc4198b2053efcb95cc95351ddd5affc))
@@ -17,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updates ci to patch change files step ([6d9736e](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/6d9736e500ad550ff1ade106f19038162acea0e9))
 - Testing ci change with readme update ([#13](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/13)) ([4475ec9](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/4475ec9355a1a3c84af5b33bcc1d9cfa8c3b16c5))
+- Prepare release v0.1.1 ([#14](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/14)) ([bff9e66](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/bff9e665cd34a9f162fec81f0f8cda40d01a363b))
+- Updates justfile correct incorrect prepare-release step ([#15](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/15)) ([791ad70](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/791ad7096b71ac7eb4f124af42e40685ef1c3015))
 
 ### Build
 
