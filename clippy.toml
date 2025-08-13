@@ -14,10 +14,6 @@ disallowed-methods = [
     "tokio::task::JoinSet::join_next",
     "tokio::task::JoinSet::join_next_with_id",
 ]
-# TODO: Enable
-# disallowed-types = [
-#     { path = "std::time::Instant", reason = "Use `datafusion_common::instant::Instant` instead for WASM compatibility" },
-# ]
 
 # Lowering the threshold to help prevent stack overflows (default is 16384)
 # See: https://rust-lang.github.io/rust-clippy/master/index.html#/large_futures

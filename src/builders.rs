@@ -119,7 +119,6 @@ impl ClickHouseBuilder {
         self
     }
 
-    // TODO: Docs - also link to documentation on clickhouse-arrow
     /// Configure the underlying [`clickhouse_arrow::ClientBuilder`].
     #[must_use]
     pub fn configure_client(mut self, f: impl FnOnce(ClientBuilder) -> ClientBuilder) -> Self {
@@ -127,8 +126,6 @@ impl ClickHouseBuilder {
         self
     }
 
-    // TODO: Docs - also link to documentation on clickhouse-arrow
-    //
     /// Configure the underlying [`clickhouse_arrow::ArrowPoolBuilder`].
     #[must_use]
     pub fn configure_pool(mut self, f: impl FnOnce(ArrowPoolBuilder) -> ArrowPoolBuilder) -> Self {
@@ -136,8 +133,6 @@ impl ClickHouseBuilder {
         self
     }
 
-    // TODO: Docs - also link to documentation on clickhouse-arrow
-    //
     /// `clickhouse_arrow` defaults to binary encoding for
     /// [`datafusion::arrow::datatypes::DataType::Utf8`] columns, the default is inverted for
     /// `DataFusion`. This method allows disabling that change to use binary encoding for strings,
@@ -153,8 +148,6 @@ impl ClickHouseBuilder {
         self
     }
 
-    // TODO: Docs - also mention how this is the only way to construct a ClickHouseCatalogBuilder
-    //
     /// Build ensures `ClickHouse` builtins are registered (such as nested functions), the pool is
     /// attached to the factory, the `ClickHouse` endpoint is reachable, and the catalog is created
     /// and registered to the [`SessionContext`].

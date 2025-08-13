@@ -642,7 +642,6 @@ mod tests {
         assert_eq!(format!("{id}"), "42");
     }
 
-    // TODO: Important! Add assertion that column ids are not affected by scalars
     #[test]
     fn test_collect_column_ids() {
         let visitor = SourceLineageVistor::new();

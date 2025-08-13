@@ -1046,7 +1046,9 @@ mod tests {
         Ok(())
     }
 
-    // TODO: Add tests for Unnest plan
+    // TODO: Add tests for Unnest plan after upstream bug is addressed
+    //
+    // Ref: https://github.com/datafusion-contrib/datafusion-federation/pull/135
 
     // ----
     // All of the following tests require the "mocks" feature to be enabled

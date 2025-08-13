@@ -14,10 +14,7 @@ use std::sync::Arc;
 use clickhouse_arrow::test_utils::{ClickHouseContainer, get_or_create_container};
 #[cfg(feature = "federation")]
 use clickhouse_datafusion::federation::FederatedContext;
-use clickhouse_datafusion::{
-    ClickHouseBuilder, ClickHouseCatalogBuilder, ClickHouseSessionContext,
-    DEFAULT_CLICKHOUSE_CATALOG,
-};
+use clickhouse_datafusion::prelude::*;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::*;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -37,7 +34,8 @@ fn configure_client(
         .with_password(&ch.password)
         .with_ipv4_only(true)
         .with_compression(clickhouse_arrow::CompressionMethod::LZ4)
-        .with_arrow_options(clickhouse_datafusion::default_arrow_options())
+        // Already the default, useful to locate the default options used
+        .with_arrow_options(default_arrow_options())
 }
 
 fn create_clickhouse_session_context() -> ClickHouseSessionContext {

@@ -21,8 +21,6 @@ Thank you for your interest in contributing to clickhouse-datafusion! This docum
 
 ### `DataFusion`
 
-TODO: Remove - refer to DataFusion's contribution guide
-
 Contributor Guide:
 https://datafusion.apache.org/contributor-guide/index.html
 

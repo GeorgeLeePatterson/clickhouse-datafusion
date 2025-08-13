@@ -117,8 +117,6 @@ impl ClickHouseConnectionPool {
     }
 }
 
-// TODO: Docs - also included links to clickhouse-arrow
-// TODO: Support `params` in query functions
 /// A wrapper around [`ArrowPoolConnection`] that provides additional functionality relevant for
 /// `DataFusion`.
 ///

@@ -10,7 +10,7 @@ use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 
 use super::plan_node::{CLICKHOUSE_FUNCTION_NODE_NAME, ClickHouseFunctionNode};
 
-// TODO: Docs - This actually executes the custom `ClickHouseFunctionNode` `UserDefinedLogicalNode`.
+/// `DataFusion` `ExtensionPlanner` for executing [`ClickHouseFunctionNode`]s.
 #[derive(Clone, Copy, Debug)]
 pub struct ClickHouseExtensionPlanner;
 
