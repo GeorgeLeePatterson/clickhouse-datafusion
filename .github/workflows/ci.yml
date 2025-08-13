@@ -64,7 +64,7 @@ jobs:
       run: cargo +nightly fmt -- --check
 
     - name: Run clippy
-      run: cargo +stable clippy --all-features --all-targets -- -D warnings
+      run: cargo +stable clippy --profile ci --all-features --all-targets -- -D warnings
 
   test-unit:
     name: Unit Tests
@@ -104,8 +104,7 @@ jobs:
 
     - name: Run unit tests
       run: |
-        CLICKHOUSE_NATIVE_DEBUG_ARROW= RUST_LOG= cargo test --lib \
-          -F ${{ matrix.features }} -- --nocapture --show-output
+        cargo test --lib --profile ci -F ${{ matrix.features }} -- --nocapture --show-output
 
   test-integration:
     name: Integration Tests
@@ -149,8 +148,7 @@ jobs:
 
     - name: Run integration tests
       run: |
-        CLICKHOUSE_NATIVE_DEBUG_ARROW= RUST_LOG= cargo test \
-          -F ${{ matrix.features }} --test "e2e" -- --nocapture --show-output
+        cargo test --profile ci -F ${{ matrix.features }} --test "e2e" -- --nocapture --show-output
 
     # TODO: Convert doc test to tests and reenable
     # - name: Run doc tests
@@ -179,10 +177,10 @@ jobs:
     - name: Generate code coverage
       run: |
         cargo llvm-cov clean --workspace
-        cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils,mocks
-        cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils
-        cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils,mocks,federation
-        cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" -F test-utils,federation
+        cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" --profile ci -F test-utils,mocks
+        cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" --profile ci -F test-utils
+        cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" --profile ci -F test-utils,mocks,federation
+        cargo llvm-cov --lcov --no-report --ignore-filename-regex "(examples).*" --profile ci -F test-utils,federation
         cargo llvm-cov report --lcov --output-path lcov.info
 
     - name: Upload coverage to Codecov
