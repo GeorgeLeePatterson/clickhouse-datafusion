@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      skip-publish:
+        description: 'Create release only'
+        default: false
+        required: false
+        type: boolean
 
 permissions:
   contents: write
@@ -38,7 +45,15 @@ jobs:
             exit 1
           fi
 
+      - name: Verify publish
+        if: ${{ inputs.skip_publish == false }}
+        run: |
+          cargo publish --dry-run -p clickhouse-datafusion --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
       - name: Publish to crates.io
+        if: ${{ inputs.skip_publish == false }}
         run: |
           cargo publish -p clickhouse-datafusion --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         env:

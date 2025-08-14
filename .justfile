@@ -215,6 +215,9 @@ tag-release version:
         exit 1
     fi
 
+    # Verify publish will work
+    cargo publish --dry-run -p clickhouse-datafusion --no-verify
+
     # Create and push tag
     git tag -a "v{{version}}" -m "Release v{{version}}"
     git push origin "v{{version}}"
