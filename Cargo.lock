@@ -1394,9 +1394,9 @@ dependencies = [
 
 [[package]]
 name = "datafusion-federation"
-version = "0.4.8"
+version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c34a9c0dfabcefa3619a3593b23c7f63f14caa7c5e8bfdd82c5948140483cd4"
+checksum = "ac64b18cbf7f486b2b404b499531f9bb763005a7e963b1d3c4daaef26d3aee4f"
 dependencies = [
  "arrow-json",
  "async-stream",
