@@ -45,6 +45,10 @@ e2e_test!(udfs_lambda, tests::test_clickhouse_udfs_lambda, TRACING_DIRECTIVES, N
 #[cfg(feature = "test-utils")]
 e2e_test!(udfs_failing, tests::test_clickhouse_udfs_failing, TRACING_DIRECTIVES, None);
 
+// Test aggregation functions
+#[cfg(feature = "test-utils")]
+e2e_test!(aggregations, tests::test_aggregation_functions, TRACING_DIRECTIVES, None);
+
 // -- FEDERATION --
 
 // Test simple clickhouse udf
@@ -1231,7 +1235,7 @@ mod tests {
         // -----------------------------
         // Test deeply nested subqueries
         //
-        // NOTE: This test fails due to DataFusion's correlated subquery limitations
+        // NOTE: This now works due to improved empty schema handling for COUNT(*) aggregations
         let query = format!(
             "SELECT
                 outer_name,
@@ -1252,8 +1256,9 @@ mod tests {
                 FROM clickhouse.{db}.people p
             ) t"
         );
-        let result = ctx.sql(&query).await?.collect().await;
-        assert!(result.is_err(), "Deeply nested subqueries test should fail");
+        let result = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&result)?;
+        assert!(!result.is_empty(), "Deeply nested subqueries should return results");
         eprintln!(">>> Deeply nested subqueries test passed");
 
         // -----------------------------
@@ -1547,6 +1552,155 @@ mod tests {
         eprintln!(">>> Federated query passed");
 
         eprintln!(">> Test federated catalog completed");
+
+        Ok(())
+    }
+
+    pub(super) async fn test_aggregation_functions(ch: Arc<ClickHouseContainer>) -> Result<()> {
+        let db = "test_db_aggregations";
+
+        // Initialize session context
+        let ctx = SessionContext::new();
+
+        // IMPORTANT! If federation is enabled, federate the context
+        #[cfg(feature = "federation")]
+        let ctx = ctx.federate();
+
+        let builder = common::helpers::create_builder(&ctx, &ch).await?;
+        let clickhouse = common::helpers::setup_test_tables(builder, db, &ctx).await?;
+
+        // Insert test data (people & people2)
+        let clickhouse = common::helpers::insert_test_data(clickhouse, db, &ctx).await?;
+
+        // Refresh catalog
+        let _catalog_provider = clickhouse.build(&ctx).await?;
+
+        eprintln!("---- Starting aggregation tests ----");
+
+        // -----------------------------
+        // Test COUNT aggregate
+        let query = format!("SELECT COUNT(*) as cnt FROM clickhouse.{db}.people");
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 1);
+        eprintln!(">>> COUNT(*) test passed");
+
+        // -----------------------------
+        // Test COUNT with column
+        let query = format!("SELECT COUNT(id) as cnt FROM clickhouse.{db}.people");
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        eprintln!(">>> COUNT(column) test passed");
+
+        // -----------------------------
+        // Test SUM aggregate
+        let query = format!("SELECT SUM(id) as total FROM clickhouse.{db}.people");
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        eprintln!(">>> SUM test passed");
+
+        // -----------------------------
+        // Test AVG aggregate
+        let query = format!("SELECT AVG(id) as avg_id FROM clickhouse.{db}.people");
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        eprintln!(">>> AVG test passed");
+
+        // -----------------------------
+        // Test MIN aggregate
+        let query = format!("SELECT MIN(id) as min_id FROM clickhouse.{db}.people");
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        eprintln!(">>> MIN test passed");
+
+        // -----------------------------
+        // Test MAX aggregate
+        let query = format!("SELECT MAX(id) as max_id FROM clickhouse.{db}.people");
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        eprintln!(">>> MAX test passed");
+
+        // -----------------------------
+        // Test multiple aggregates in one query
+        let query = format!(
+            "SELECT COUNT(*) as cnt, SUM(id) as total, AVG(id) as avg_id, MIN(id) as min_id, MAX(id) as max_id
+             FROM clickhouse.{db}.people"
+        );
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        eprintln!(">>> Multiple aggregates test passed");
+
+        // -----------------------------
+        // Test GROUP BY with aggregates
+        let query = format!(
+            "SELECT name, COUNT(*) as cnt
+             FROM clickhouse.{db}.people
+             GROUP BY name
+             ORDER BY name"
+        );
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        eprintln!(">>> GROUP BY with COUNT test passed");
+
+        // -----------------------------
+        // Test GROUP BY with multiple aggregates
+        let query = format!(
+            "SELECT name, COUNT(*) as cnt, SUM(id) as total_id, AVG(id) as avg_id
+             FROM clickhouse.{db}.people2
+             GROUP BY name
+             ORDER BY name"
+        );
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert!(results.len() > 0);
+        eprintln!(">>> GROUP BY with multiple aggregates test passed");
+
+        // -----------------------------
+        // Test HAVING clause with aggregates
+        let query = format!(
+            "SELECT name, COUNT(*) as cnt
+             FROM clickhouse.{db}.people2
+             GROUP BY name
+             HAVING COUNT(*) > 0
+             ORDER BY name"
+        );
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert!(results.len() > 0);
+        eprintln!(">>> HAVING clause test passed");
+
+        // -----------------------------
+        // Test aggregates with WHERE clause
+        let query = format!(
+            "SELECT COUNT(*) as cnt, SUM(id) as total
+             FROM clickhouse.{db}.people
+             WHERE id > 0"
+        );
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        eprintln!(">>> Aggregates with WHERE clause test passed");
+
+        // -----------------------------
+        // Test COUNT DISTINCT
+        let query = format!(
+            "SELECT COUNT(DISTINCT name) as unique_names
+             FROM clickhouse.{db}.people2"
+        );
+        let results = ctx.sql(&query).await?.collect().await?;
+        arrow::util::pretty::print_batches(&results)?;
+        assert_eq!(results.len(), 1);
+        eprintln!(">>> COUNT DISTINCT test passed");
+
+        eprintln!(">> All aggregation tests completed successfully");
 
         Ok(())
     }

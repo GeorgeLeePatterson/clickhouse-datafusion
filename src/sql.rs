@@ -6,10 +6,10 @@
 use std::any::Any;
 use std::fmt;
 use std::fmt::{Display, Formatter};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
@@ -245,13 +245,17 @@ impl Display for SqlTable {
     }
 }
 
-static ONE_COLUMN_SCHEMA: LazyLock<SchemaRef> =
-    LazyLock::new(|| Arc::new(Schema::new(vec![Field::new("1", DataType::Int64, true)])));
-
-/// Project a schema safely, taking into account empty columns
+/// Project a schema safely, taking into account empty columns.
+///
+/// When DataFusion executes queries like `COUNT(*)`, it passes an empty projection
+/// (`Some([])`) indicating no columns are needed. This function returns an empty
+/// schema in that case, as DataFusion only needs row counts, not column values.
+///
+/// The underlying SQL still generates `SELECT 1 FROM table` for ClickHouse, but
+/// the RecordBatchStream schema correctly reflects that no column data is accessed.
 ///
 /// # Errors
-/// - Returns an error if the projection fails
+/// - Returns an error if the schema projection fails
 pub fn project_schema_safe(
     schema: &SchemaRef,
     projection: Option<&Vec<usize>>,
@@ -259,11 +263,9 @@ pub fn project_schema_safe(
     let schema = match projection {
         Some(columns) => {
             if columns.is_empty() {
-                // If the projection is Some([]) then it gets unparsed as `SELECT 1`, so return a
-                // schema with a single Int64 column.
-                //
-                // See: <https://github.com/apache/datafusion/blob/83ce79c39412a4f150167d00e40ea05948c4870f/datafusion/sql/src/unparser/plan.rs#L998>
-                ONE_COLUMN_SCHEMA.clone()
+                // Empty projection = no columns needed (e.g., COUNT(*))
+                // Return empty schema to match DataFusion's logical plan expectations
+                Arc::new(Schema::empty())
             } else {
                 Arc::new(schema.project(columns)?)
             }
