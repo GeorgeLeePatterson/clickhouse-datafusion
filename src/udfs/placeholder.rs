@@ -18,7 +18,7 @@ pub fn placeholder_udf_from_placeholder(placeholder: PlaceholderUDF) -> ScalarUD
 // "something" instead of an error.
 //
 /// Placeholder UDF implementation
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct PlaceholderUDF {
     pub name:      String,
     pub signature: Signature,
@@ -78,6 +78,7 @@ mod tests {
     use std::sync::Arc;
 
     use datafusion::arrow::datatypes::{DataType, Field};
+    use datafusion::config::ConfigOptions;
     use datafusion::logical_expr::{Signature, Volatility};
 
     use super::*;
@@ -153,8 +154,13 @@ mod tests {
 
         // Create empty ScalarFunctionArgs that should cause failure
         let return_field = Arc::new(Field::new("result", DataType::Utf8, true));
-        let args =
-            ScalarFunctionArgs { args: vec![], number_rows: 0, arg_fields: vec![], return_field };
+        let args = ScalarFunctionArgs {
+            args: vec![],
+            number_rows: 0,
+            arg_fields: vec![],
+            return_field,
+            config_options: Arc::new(ConfigOptions::default()),
+        };
 
         let result = placeholder.invoke_with_args(args);
         assert!(result.is_err());

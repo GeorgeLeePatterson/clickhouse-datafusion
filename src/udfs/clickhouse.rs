@@ -15,7 +15,7 @@ pub const CLICKHOUSE_UDF_ALIASES: [&str; 4] =
 pub fn clickhouse_udf() -> ScalarUDF { ScalarUDF::new_from_impl(ClickHouseUDF::new()) }
 
 // TODO: Remove - docs
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ClickHouseUDF {
     signature: Signature,
     aliases:   Vec<String>,
@@ -73,6 +73,7 @@ mod tests {
 
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::common::ScalarValue;
+    use datafusion::config::ConfigOptions;
     use datafusion::logical_expr::{
         ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl, TypeSignature,
     };
@@ -147,10 +148,11 @@ mod tests {
     fn test_invoke_with_args_not_implemented() {
         let udf = ClickHouseUDF::new();
         let args = ScalarFunctionArgs {
-            args:         vec![],
-            arg_fields:   vec![],
-            number_rows:  1,
-            return_field: Arc::new(Field::new("", DataType::Int32, false)),
+            args:           vec![],
+            arg_fields:     vec![],
+            number_rows:    1,
+            return_field:   Arc::new(Field::new("", DataType::Int32, false)),
+            config_options: Arc::new(ConfigOptions::default()),
         };
         let result = udf.invoke_with_args(args);
         assert!(result.is_err());

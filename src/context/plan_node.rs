@@ -138,7 +138,7 @@ impl UserDefinedLogicalNodeCore for ClickHouseFunctionNode {
         // })
     }
 
-    fn check_invariants(&self, _check: InvariantLevel, _plan: &LogicalPlan) -> Result<()> {
+    fn check_invariants(&self, _check: InvariantLevel) -> Result<()> {
         // No invariant checks needed for now
         Ok(())
     }

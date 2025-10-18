@@ -24,9 +24,9 @@ mocks = []                                                # Used for unit tests 
 
 [dependencies]
 async-trait = "0.1"
-clickhouse-arrow = { version = "0.1" }
+clickhouse-arrow = { git = "https://github.com/nazq/clickhouse-arrow.git", branch = "arrow-v56-upgrade" }
 dashmap = "6"
-datafusion = "49"
+datafusion = "50"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 pin-project = "1"
@@ -43,7 +43,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # Note: Using crates.io version for publishing compatibility
 # Once PR #135 is merged upstream, we can update this dependency
 [dependencies.datafusion-federation]
-version = "0.4.9"
+version = "0.4.10"
 features = ["sql"]
 optional = true
 

@@ -36,7 +36,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner};
 use datafusion::prelude::{DataFrame, Expr, SQLOptions, SessionContext};
 use datafusion::sql::parser::Statement;
-use datafusion::sql::planner::{ContextProvider, ParserOptions, SqlToRel};
+use datafusion::sql::planner::{ContextProvider, NullOrdering, ParserOptions, SqlToRel};
 use datafusion::sql::{ResolvedTableReference, TableReference};
 use datafusion::variable::VarType;
 
@@ -267,6 +267,7 @@ impl ClickHouseSessionContext {
             support_varchar_with_length:        sql_parser_options.support_varchar_with_length,
             map_string_types_to_utf8view:       sql_parser_options.map_string_types_to_utf8view,
             collect_spans:                      sql_parser_options.collect_spans,
+            default_null_ordering:              NullOrdering::NullsMax,
         }
     }
 }

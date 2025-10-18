@@ -30,7 +30,7 @@ fn get_doc() -> &'static Documentation { &DOCUMENTATION }
 //
 /// [`ClickHouseEval`] is an escape hatch to pass syntax that `DataFusion` does not support directly
 /// to `ClickHouse` using the string representation only.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ClickHouseEval {
     signature: Signature,
     aliases:   Vec<String>,
@@ -148,6 +148,7 @@ mod tests {
     use datafusion::arrow;
     use datafusion::arrow::datatypes::*;
     use datafusion::common::ScalarValue;
+    use datafusion::config::ConfigOptions;
     use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDFImpl};
     use datafusion::prelude::SessionContext;
 
@@ -422,10 +423,11 @@ mod tests {
     fn test_invoke_with_args_not_implemented() {
         let func = ClickHouseEval::new();
         let args = ScalarFunctionArgs {
-            args:         vec![],
-            arg_fields:   vec![],
-            number_rows:  1,
-            return_field: Arc::new(Field::new("", DataType::Int32, false)),
+            args:           vec![],
+            arg_fields:     vec![],
+            number_rows:    1,
+            return_field:   Arc::new(Field::new("", DataType::Int32, false)),
+            config_options: Arc::new(ConfigOptions::default()),
         };
         let result = func.invoke_with_args(args);
         assert!(result.is_err());
