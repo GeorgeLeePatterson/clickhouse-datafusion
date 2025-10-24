@@ -121,8 +121,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // containing the number of rows inserted. You can use .map(|_| ())? to ignore it.
     let result = ctx
         .sql(&format!(
-            "INSERT INTO {CATALOG}.{SCHEMA}.users
-        SELECT * FROM parquet_data"
+            "
+            INSERT INTO {CATALOG}.{SCHEMA}.users
+            SELECT * FROM parquet_data
+            "
         ))
         .await?
         .collect()

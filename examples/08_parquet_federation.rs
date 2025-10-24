@@ -126,7 +126,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("   ✅ Registered Parquet files");
 
-
     let users_schema = Arc::new(Schema::new(vec![
         Field::new("user_id", DataType::Int32, false),
         Field::new("name", DataType::Utf8, false),
