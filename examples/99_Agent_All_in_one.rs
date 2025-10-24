@@ -900,6 +900,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   ✓ Error handling and best practices");
     println!("\n🤖 AGENT LEARNING COMPLETE!");
 
-    ch.shutdown().await.ok();
+    let _ = ch.shutdown().await.ok();
     Ok(())
 }
