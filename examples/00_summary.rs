@@ -276,6 +276,6 @@ async fn main() -> Result<()> {
     info!("   - Federation (joining ClickHouse with other data sources)");
     info!("   - Complex analytics (window functions, CTEs)");
 
-    ch.shutdown().await.ok();
+    let _ = ch.shutdown().await.ok();
     Ok(())
 }

@@ -238,6 +238,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   • Federation works seamlessly across Parquet and ClickHouse");
     println!("   • Use .federate() on SessionContext to enable federation");
 
-    ch.shutdown().await.ok();
+    let _ = ch.shutdown().await.ok();
     Ok(())
 }
