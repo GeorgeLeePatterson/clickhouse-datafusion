@@ -24,7 +24,7 @@ mocks = []                                                # Used for unit tests 
 
 [dependencies]
 async-trait = "0.1"
-clickhouse-arrow = { version = "0.1.7" }
+clickhouse-arrow = { git = "https://github.com/nazq/clickhouse-arrow", branch = "perf-benchmarks" }
 dashmap = "6"
 datafusion = "50"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -44,6 +44,9 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 version = "0.4.10"
 features = ["sql"]
 optional = true
+
+[dev-dependencies]
+comfy-table = "7.1"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -66,7 +69,11 @@ unit_bindings = "warn"
 unnameable_types = "warn"
 unreachable_pub = "warn"
 unsafe_op_in_unsafe_fn = "warn"
-unused_crate_dependencies = "warn"
+# Disabled: False positive for dev-dependencies that are also transitive dependencies
+# (e.g., comfy-table is both a dev-dep for examples and transitive via arrow-cast)
+# See: https://github.com/rust-lang/rust/issues/95513
+# Alternative is to migrate to a workspace like clickhouse-arrow
+# unused_crate_dependencies = "warn"
 unused_import_braces = "warn"
 unused_lifetimes = "warn"
 unused_macro_rules = "warn"
@@ -149,6 +156,14 @@ name = "08_parquet_federation"
 required-features = ["test-utils", "federation"]
 
 [[example]]
+name = "09_write_concurrency"
+required-features = ["test-utils"]
+
+[[example]]
+name = "10_large_scale"
+required-features = ["test-utils"]
+
+[[example]]
 name = "99_Agent_All_in_one"
 required-features = ["test-utils", "federation"]
 
@@ -156,4 +171,8 @@ required-features = ["test-utils", "federation"]
 
 [[test]]
 name = "e2e"
+required-features = ["test-utils"]
+
+[[test]]
+name = "e2e_stress"
 required-features = ["test-utils"]

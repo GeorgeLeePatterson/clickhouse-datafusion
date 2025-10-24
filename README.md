@@ -309,12 +309,15 @@ just coverage-lcov     # LCOV for CI
 
 ## Examples
 
-See the [examples](examples/) directory for a complete working example:
+See the [examples](examples/) directory for comprehensive examples:
 
-- **Basic Integration**: Simple `ClickHouse` querying
-- **Federation**: Cross-database joins
-- **UDF Usage**: `ClickHouse` function examples
-- **Schema Management**: Table creation and management
+- **Basic Integration**: Simple `ClickHouse` querying (`00_summary.rs`)
+- **Federation**: Cross-database joins (`05_federation.rs`, `08_parquet_federation.rs`)
+- **UDF Usage**: `ClickHouse` function examples (`00_summary.rs`)
+- **Schema Management**: Table creation and DROP TABLE support (`06_drop_tables.rs`)
+- **Performance**: Parallel writes and benchmarking (`09_write_concurrency.rs`, `10_large_scale.rs`)
+
+Run all examples: `bash examples/run_all.sh`
 
 ## Contributing
 

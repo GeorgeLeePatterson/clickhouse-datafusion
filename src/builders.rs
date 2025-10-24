@@ -85,9 +85,10 @@ pub fn default_arrow_options() -> ArrowOptions {
 /// default is `true`. This can be disabled by modifying the setting via
 /// [`ClickHouseBuilder::configure_arrow_options`]
 pub struct ClickHouseBuilder {
-    endpoint:     Destination,
-    pool_builder: ArrowConnectionPoolBuilder,
-    factory:      ClickHouseTableProviderFactory,
+    endpoint:          Destination,
+    pool_builder:      ArrowConnectionPoolBuilder,
+    factory:           ClickHouseTableProviderFactory,
+    write_concurrency: Option<usize>,
 }
 
 impl ClickHouseBuilder {
@@ -99,7 +100,12 @@ impl ClickHouseBuilder {
         let endpoint = endpoint.into();
         let pool_builder = ArrowConnectionPoolBuilder::new(endpoint.clone())
             .configure_client(|c| c.with_arrow_options(default_arrow_options()));
-        Self { endpoint, pool_builder, factory: ClickHouseTableProviderFactory::new() }
+        Self {
+            endpoint,
+            pool_builder,
+            factory: ClickHouseTableProviderFactory::new(),
+            write_concurrency: None,
+        }
     }
 
     pub fn new_with_pool_builder(
@@ -107,7 +113,12 @@ impl ClickHouseBuilder {
         pool_builder: ArrowConnectionPoolBuilder,
     ) -> Self {
         let endpoint = endpoint.into();
-        Self { endpoint, pool_builder, factory: ClickHouseTableProviderFactory::new() }
+        Self {
+            endpoint,
+            pool_builder,
+            factory: ClickHouseTableProviderFactory::new(),
+            write_concurrency: None,
+        }
     }
 
     /// Configure whether to coerce schemas to match expected schemas during query execution.
@@ -116,6 +127,24 @@ impl ClickHouseBuilder {
     #[must_use]
     pub fn with_coercion(mut self, coerce: bool) -> Self {
         self.factory = self.factory.with_coercion(coerce);
+        self
+    }
+
+    /// Configure the write concurrency level for INSERT operations.
+    ///
+    /// This controls how many record batches can be written to `ClickHouse` concurrently during
+    /// INSERT operations. Higher values may improve throughput for large bulk inserts but will
+    /// increase memory usage and connection pool pressure.
+    ///
+    /// Default: 4 (matching clickhouse-arrow's current connection pool limit)
+    ///
+    /// # Note
+    /// This configuration can be extended to integrate with `DataFusion`'s `SessionConfig` using
+    /// the `ConfigExtension` trait for global defaults across multiple catalogs. The current
+    /// implementation uses a builder-level approach which serves most use cases efficiently.
+    #[must_use]
+    pub fn with_write_concurrency(mut self, concurrency: usize) -> Self {
+        self.write_concurrency = Some(concurrency);
         self
     }
 
@@ -169,7 +198,13 @@ impl ClickHouseBuilder {
 
         let endpoint = self.endpoint.to_string();
         let factory = self.factory;
-        let pool = Arc::new(factory.attach_pool_builder(self.endpoint, self.pool_builder).await?);
+        let mut pool = factory.attach_pool_builder(self.endpoint, self.pool_builder).await?;
+
+        // Configure write concurrency if specified
+        if let Some(concurrency) = self.write_concurrency {
+            pool = pool.with_write_concurrency(concurrency);
+        }
+        let pool = Arc::new(pool);
 
         ClickHouseCatalogBuilder::try_new(ctx, catalog, database, endpoint, pool, factory).await
     }
