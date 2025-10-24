@@ -1269,20 +1269,17 @@ mod tests {
         );
         #[cfg(not(feature = "federation"))]
         {
-            let df = ctx.sql(&query).await?;
-            let result = df.collect().await;
-            assert!(
-                result.is_err(),
-                "Deeply nested subqueries should fail without federation, need to address \
-                 'settings'"
-            );
+            let result = ctx.sql(&query).await?.collect().await?;
+            arrow::util::pretty::print_batches(&result)?;
+            assert!(!result.is_empty(), "Deeply nested subqueries should return results");
+            eprintln!(">>> Deeply nested subqueries test passed");
         }
         #[cfg(feature = "federation")]
         {
             let result = ctx.sql(&query).await?.collect().await;
             assert!(result.is_err(), "Scalar subqueries not supported with federation yet");
+            eprintln!(">>> Deeply nested subqueries tests need additional review");
         }
-        eprintln!(">>> Deeply nested subqueries tests need additional review");
 
         // -----------------------------
         // Test two-column clickhouse function
