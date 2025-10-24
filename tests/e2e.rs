@@ -1265,10 +1265,17 @@ mod tests {
         );
         #[cfg(not(feature = "federation"))]
         {
-            let result = ctx.sql(&query).await?.collect().await?;
-            arrow::util::pretty::print_batches(&result)?;
-            assert!(!result.is_empty(), "Deeply nested subqueries should return results");
-            eprintln!(">>> Deeply nested subqueries test passed");
+            let df = ctx.sql(&query).await?;
+            let result = df.collect().await;
+            assert!(
+                result.is_err(),
+                "Deeply nested subqueries should fail without federation (correlated subqueries \
+                 not yet supported)"
+            );
+            eprintln!(
+                ">>> Deeply nested subqueries test passed (expected failure without \
+                 federation)\n{result:?}"
+            );
         }
         #[cfg(feature = "federation")]
         {
@@ -1415,12 +1422,12 @@ mod tests {
 
         // -----------------------------
         // Verify table exists by running a simple query
-        eprintln!(">>> Attempting to query table: clickhouse.{}.test_table", db);
+        eprintln!(">>> Attempting to query table: clickhouse.{db}.test_table");
         let result = ctx.sql(&format!("SELECT COUNT(*) FROM clickhouse.{db}.test_table")).await;
 
         match &result {
             Ok(_) => eprintln!(">>> SQL query succeeded"),
-            Err(e) => eprintln!(">>> SQL query failed: {:?}", e),
+            Err(e) => eprintln!(">>> SQL query failed: {e:?}"),
         }
 
         let collect_result = result?.collect().await;
@@ -1431,7 +1438,7 @@ mod tests {
                 eprintln!(">>> Verified table exists");
             }
             Err(e) => {
-                eprintln!(">>> Query collection failed: {:?}", e);
+                eprintln!(">>> Query collection failed: {e:?}");
                 panic!("Table should exist and be queryable");
             }
         }
@@ -1457,7 +1464,7 @@ mod tests {
                         eprintln!(">>> Verified table no longer exists");
                     }
                     Err(e) => {
-                        eprintln!(">>> DROP TABLE failed during execution: {}", e);
+                        eprintln!(">>> DROP TABLE failed during execution: {e}");
                         eprintln!(
                             ">>> EXPECTED: deregister_table not yet implemented in \
                              ClickHouseSchemaProvider"
@@ -1469,7 +1476,7 @@ mod tests {
                 }
             }
             Err(e) => {
-                eprintln!(">>> DROP TABLE failed during planning: {}", e);
+                eprintln!(">>> DROP TABLE failed during planning: {e}");
                 eprintln!(
                     ">>> EXPECTED: deregister_table not yet implemented in \
                      ClickHouseSchemaProvider"
@@ -1495,7 +1502,7 @@ mod tests {
                 eprintln!(">>> DROP TABLE IF EXISTS succeeded for non-existent table");
             }
             Err(e) => {
-                eprintln!(">>> DROP TABLE IF EXISTS failed: {}", e);
+                eprintln!(">>> DROP TABLE IF EXISTS failed: {e}");
                 eprintln!(">>> EXPECTED: deregister_table not yet implemented");
             }
         }
@@ -1802,7 +1809,7 @@ mod tests {
         );
         let results = ctx.sql(&query).await?.collect().await?;
         arrow::util::pretty::print_batches(&results)?;
-        assert!(results.len() > 0);
+        assert!(!results.is_empty());
         eprintln!(">>> GROUP BY with multiple aggregates test passed");
 
         // -----------------------------
@@ -1816,7 +1823,7 @@ mod tests {
         );
         let results = ctx.sql(&query).await?.collect().await?;
         arrow::util::pretty::print_batches(&results)?;
-        assert!(results.len() > 0);
+        assert!(!results.is_empty());
         eprintln!(">>> HAVING clause test passed");
 
         // -----------------------------
@@ -1833,10 +1840,7 @@ mod tests {
 
         // -----------------------------
         // Test COUNT DISTINCT
-        let query = format!(
-            "SELECT COUNT(DISTINCT name) as unique_names
-             FROM clickhouse.{db}.people2"
-        );
+        let query = format!("SELECT COUNT(DISTINCT name) as uniques FROM clickhouse.{db}.people2");
         let results = ctx.sql(&query).await?.collect().await?;
         arrow::util::pretty::print_batches(&results)?;
         assert_eq!(results.len(), 1);

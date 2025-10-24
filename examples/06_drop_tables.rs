@@ -248,6 +248,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n✅ All DROP TABLE operations completed successfully!");
 
-    ch.shutdown().await.ok();
+    let _ = ch.shutdown().await.ok();
     Ok(())
 }

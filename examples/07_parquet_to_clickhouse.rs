@@ -174,6 +174,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("   • Schema coercion (.with_schema_coercion(true)) helps with type compatibility");
 
-    ch.shutdown().await.ok();
+    let _ = ch.shutdown().await.ok();
     Ok(())
 }
