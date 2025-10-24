@@ -196,6 +196,9 @@ impl ClickHouseSessionContext {
         self
     }
 
+    /// Access the underlying session context by reference.
+    pub fn session_context(&self) -> &SessionContext { &self.inner }
+
     // TODO: Docs - especially mention that using the provided context WILL NOT WORK with pushdown
     pub fn into_session_context(self) -> SessionContext { self.inner }
 
