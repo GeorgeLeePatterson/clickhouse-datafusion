@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+- Provides method on ClickHouseSessionContext to transform session ([#40](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/40)) ([666af79](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/666af799cc34d5fabc6a2c54381425371270d1b5))
+
+## [0.1.3] - 2025-10-24
+
+### Bug Fixes
+
 - Resolve schema mismatch for COUNT(*) and aggregation queries ([#32](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/32)) ([f4d22f3](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/f4d22f3920f1f67f2516ef875e8c0b958011b750))
 
 ### Documentation
@@ -29,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgrades datafusion-federation to 0.4.9 ([#23](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/23)) ([102c4e0](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/102c4e016c15dfe6271611cfa28129577f5e779a))
 - Upgrades clickhouse-arrow 0.1.6 ([#24](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/24)) ([80e3a11](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/80e3a11e41e4d566fd71356a333f899b37e8ce73))
 - Addresses minor lints, patches ci workflow ([#37](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/37)) ([e310554](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/e310554f2670c35b476b710ad04d9a0380c0db8f))
+- Prepare release v0.1.3 ([#38](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/38)) ([af19a91](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/af19a918ceab46e3e60f118d70b1d290180bf942))
 
 ### Build
 
