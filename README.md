@@ -75,6 +75,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+#### Preserving custom `SessionContext` configuration
+
+If you add bespoke configuration to a `SessionContext` before wrapping it (for example adding
+custom catalogs or enabling `SessionContext::enable_url_table` so URLs can be queried directly),
+use [`ClickHouseSessionContext::with_session_transform`](https://docs.rs/clickhouse-datafusion/latest/clickhouse_datafusion/struct.ClickHouseSessionContext.html#method.with_session_transform)
+to re-apply those changes after the ClickHouse-specific rebuild:
+
+```rust,ignore
+use datafusion::prelude::SessionContext;
+use clickhouse_datafusion::ClickHouseSessionContext;
+
+let base = SessionContext::new().enable_url_table();
+
+let ctx = ClickHouseSessionContext::from(base)
+    .with_session_transform(|ctx| ctx.enable_url_table());
+```
+
+This keeps your customisation intact while the library layers in its own query planner and UDFs.
+
 ### With Federation (Cross-DBMS Queries)
 
 ```rust,ignore
