@@ -151,6 +151,7 @@ impl ClickHouseTableProviderFactory {
     }
 
     /// Attach an existing [`ClickHouseConnectionPool`] to the factory directly.
+    #[cfg_attr(feature = "mocks", expect(clippy::needless_pass_by_value))]
     pub fn attach_pool(
         &self,
         endpoint: impl Into<Destination>,
