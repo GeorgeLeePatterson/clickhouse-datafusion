@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use clickhouse_arrow::prelude::ClickHouseEngine;
 use clickhouse_arrow::test_utils::ClickHouseContainer;
-use clickhouse_arrow::{ClientBuilder, CompressionMethod, CreateOptions};
+use clickhouse_arrow::{
+    ArrowConnectionPoolBuilder, ClientBuilder, CompressionMethod, CreateOptions,
+};
 use clickhouse_datafusion::{
     ClickHouseBuilder, ClickHouseCatalogBuilder, DEFAULT_CLICKHOUSE_CATALOG, default_arrow_options,
 };
@@ -38,6 +40,29 @@ pub(crate) async fn create_builder(
         .configure_client(|c| configure_client(c, ch))
         .build_catalog(ctx, Some(DEFAULT_CLICKHOUSE_CATALOG))
         .await
+}
+
+// Create catalog builder
+#[allow(unused)]
+pub(crate) async fn create_builder_with_pool(
+    ctx: &SessionContext,
+    ch: &ClickHouseContainer,
+) -> Result<ClickHouseCatalogBuilder> {
+    let endpoint = ch.get_native_url();
+    let pool_identifier = endpoint.to_string();
+    let pool = ArrowConnectionPoolBuilder::new(endpoint)
+        .configure_client(|c| configure_client(c, ch).with_arrow_options(default_arrow_options()))
+        .build()
+        .await
+        .expect("Failed to build connection pool");
+    ClickHouseBuilder::build_catalog_from_pool(
+        ctx,
+        endpoint,
+        Some(DEFAULT_CLICKHOUSE_CATALOG),
+        pool_identifier,
+        pool,
+    )
+    .await
 }
 
 // Create catalog builder

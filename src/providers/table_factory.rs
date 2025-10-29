@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use clickhouse_arrow::{ArrowConnectionPoolBuilder, Destination};
+use clickhouse_arrow::{ArrowConnectionManager, ArrowConnectionPoolBuilder, Destination};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{Session, TableProvider, TableProviderFactory};
 use datafusion::common::exec_err;
@@ -148,6 +148,32 @@ impl ClickHouseTableProviderFactory {
         // Update map
         drop(self.pools.lock().insert(endpoint, pool.clone()));
         Ok(pool)
+    }
+
+    /// Attach an existing [`ClickHouseConnectionPool`] to the factory directly.
+    #[cfg_attr(feature = "mocks", expect(clippy::needless_pass_by_value))]
+    pub fn attach_pool(
+        &self,
+        endpoint: impl Into<Destination>,
+        identifer: impl Into<String>,
+        #[cfg_attr(feature = "mocks", expect(unused))] pool: clickhouse_arrow::bb8::Pool<
+            ArrowConnectionManager,
+        >,
+    ) -> ClickHouseConnectionPool {
+        let endpoint = endpoint.into();
+        debug!(?endpoint, "Attaching ClickHouse connection pool");
+
+        #[cfg(not(feature = "mocks"))]
+        let pool = ClickHouseConnectionPool::new(identifer, pool);
+
+        #[cfg(feature = "mocks")]
+        let pool = ClickHouseConnectionPool::new(identifer, ());
+
+        debug!(?endpoint, "Connection pool created successfully");
+
+        // Update map
+        drop(self.pools.lock().insert(endpoint, pool.clone()));
+        pool
     }
 
     // TODO: Docs - explain how serialized params are used by `TableProviderFactory` below and how
