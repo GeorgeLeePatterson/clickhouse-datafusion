@@ -24,7 +24,7 @@ mocks = []                                                # Used for unit tests 
 
 [dependencies]
 async-trait = "0.1"
-clickhouse-arrow = { git = "https://github.com/nazq/clickhouse-arrow", branch = "perf-benchmarks" }
+clickhouse-arrow = "0.2.0"
 dashmap = "6"
 datafusion = "50"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
