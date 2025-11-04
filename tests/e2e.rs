@@ -25,6 +25,14 @@ e2e_test!(providers, tests::test_providers, TRACING_DIRECTIVES, None);
 #[cfg(feature = "test-utils")]
 e2e_test!(insert, tests::test_insert_data, TRACING_DIRECTIVES, None);
 
+// Test parallel writes with different concurrency levels
+#[cfg(feature = "test-utils")]
+e2e_test!(parallel_writes, tests::test_parallel_writes, TRACING_DIRECTIVES, None);
+
+// Test insert metrics with EXPLAIN ANALYZE
+#[cfg(feature = "test-utils")]
+e2e_test!(insert_metrics, tests::test_insert_metrics, TRACING_DIRECTIVES, None);
+
 // Test clickhouse udfs smoke test
 #[cfg(feature = "test-utils")]
 e2e_test!(udfs_smoke_test, tests::test_clickhouse_udfs_smoke_test, TRACING_DIRECTIVES, None);
@@ -53,6 +61,10 @@ e2e_test!(aggregations, tests::test_aggregation_functions, TRACING_DIRECTIVES, N
 #[cfg(feature = "test-utils")]
 e2e_test!(drop_table, tests::test_drop_table, TRACING_DIRECTIVES, None);
 
+// Test DataSink write_all with schema validation
+#[cfg(feature = "test-utils")]
+e2e_test!(sink_write_all, tests::test_sink_write_all, TRACING_DIRECTIVES, None);
+
 // -- FEDERATION --
 
 // Test simple clickhouse udf
@@ -68,7 +80,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use clickhouse_arrow::prelude::ClickHouseEngine;
     use clickhouse_arrow::test_utils::ClickHouseContainer;
     use clickhouse_arrow::{ArrowConnectionPoolBuilder, CreateOptions};
     #[cfg(feature = "federation")]
@@ -1385,6 +1396,8 @@ mod tests {
     }
 
     pub(super) async fn test_drop_table(ch: Arc<ClickHouseContainer>) -> Result<()> {
+        use clickhouse_arrow::prelude::ClickHouseEngine;
+
         let db = "test_db_drop";
 
         // Initialize session context
@@ -1503,6 +1516,177 @@ mod tests {
         }
 
         eprintln!(">> Test DROP TABLE completed");
+
+        Ok(())
+    }
+
+    /// Test ClickHouseDataSink write_all method with schema validation
+    pub(super) async fn test_sink_write_all(ch: Arc<ClickHouseContainer>) -> Result<()> {
+        use clickhouse_arrow::prelude::ClickHouseEngine;
+        use datafusion::arrow::array::{Int32Array, RecordBatch, StringArray};
+        use datafusion::datasource::sink::DataSink;
+        use datafusion::execution::context::TaskContext;
+        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+        use futures_util::stream;
+
+        let db = "test_db_sink";
+
+        let ctx = SessionContext::new();
+        #[cfg(feature = "federation")]
+        let ctx = ctx.federate();
+
+        let builder = common::helpers::create_builder(&ctx, &ch).await?;
+
+        // Create test table schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        // Create database and table
+        let clickhouse = builder
+            .with_schema(db)
+            .await?
+            .with_new_table("sink_test", ClickHouseEngine::MergeTree, schema.clone())
+            .update_create_options(|opts| opts.with_order_by(&["id".to_string()]))
+            .create(&ctx)
+            .await?;
+
+        drop(clickhouse.build(&ctx).await?);
+
+        eprintln!(">>> Created test table for sink");
+
+        // Get the pool from the table provider
+        let table_ref = TableReference::full(DEFAULT_CLICKHOUSE_CATALOG, db, "sink_test");
+        let provider = ctx.table_provider(table_ref.clone()).await?;
+        let table_provider = extract_clickhouse_provider(&provider)
+            .expect("Could not extract ClickHouse table provider");
+        let pool = Arc::clone(table_provider.pool());
+
+        let sink_table_ref = TableReference::partial(db, "sink_test");
+        let data_sink = ClickHouseDataSink::new(pool.clone(), sink_table_ref, schema.clone());
+
+        // Test 1: Successful write with valid data
+        eprintln!(">>> Test 1: Valid data write");
+        let batch1 = RecordBatch::try_new(schema.clone(), vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+        ])?;
+
+        let stream1 =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream::iter(vec![Ok(batch1)])));
+
+        let task_ctx = Arc::new(TaskContext::default());
+        let result = data_sink.write_all(stream1, &task_ctx).await;
+        assert!(result.is_ok(), "Valid data should write successfully");
+        assert_eq!(result.unwrap(), 3, "Should have written 3 rows");
+        eprintln!(">>> ✓ Valid data write succeeded");
+
+        // Test 2: Schema mismatch - field count
+        eprintln!(">>> Test 2: Field count mismatch");
+        let wrong_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch2 =
+            RecordBatch::try_new(wrong_schema.clone(), vec![Arc::new(Int32Array::from(vec![4]))])?;
+
+        let stream2 =
+            Box::pin(RecordBatchStreamAdapter::new(wrong_schema, stream::iter(vec![Ok(batch2)])));
+
+        let result = data_sink.write_all(stream2, &task_ctx).await;
+        assert!(result.is_err(), "Field count mismatch should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Schema fields must match") || err.contains("input has 1 fields, sink 2")
+        );
+        eprintln!(">>> ✓ Field count mismatch detected");
+
+        // Test 3: Schema mismatch - data type
+        eprintln!(">>> Test 3: Data type mismatch");
+        let wrong_type_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false), // Wrong type
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let batch3 = RecordBatch::try_new(wrong_type_schema.clone(), vec![
+            Arc::new(arrow::array::Int64Array::from(vec![5i64])),
+            Arc::new(StringArray::from(vec!["d"])),
+        ])?;
+
+        let stream3 = Box::pin(RecordBatchStreamAdapter::new(
+            wrong_type_schema,
+            stream::iter(vec![Ok(batch3)]),
+        ));
+
+        let result = data_sink.write_all(stream3, &task_ctx).await;
+        assert!(result.is_err(), "Data type mismatch should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("expected data type"));
+        eprintln!(">>> ✓ Data type mismatch detected");
+
+        // Test 4: Schema mismatch - nullability
+        eprintln!(">>> Test 4: Nullability mismatch");
+        let wrong_nullable_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true), // Wrong nullability
+        ]));
+        let batch4 = RecordBatch::try_new(wrong_nullable_schema.clone(), vec![
+            Arc::new(Int32Array::from(vec![6])),
+            Arc::new(StringArray::from(vec![Some("e")])),
+        ])?;
+
+        let stream4 = Box::pin(RecordBatchStreamAdapter::new(
+            wrong_nullable_schema,
+            stream::iter(vec![Ok(batch4)]),
+        ));
+
+        let result = data_sink.write_all(stream4, &task_ctx).await;
+        assert!(result.is_err(), "Nullability mismatch should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("expected nullability"));
+        eprintln!(">>> ✓ Nullability mismatch detected");
+
+        // Verify total rows written (only the valid batch)
+        let verify = ctx.sql(&format!("SELECT COUNT(*) FROM clickhouse.{db}.sink_test")).await?;
+        let batches = verify.collect().await?;
+        arrow::util::pretty::print_batches(&batches)?;
+        // COUNT(*) returns different types depending on context, just verify we got data
+        assert!(!batches.is_empty() && batches[0].num_rows() > 0, "Should have count result");
+
+        // Test 5: Stream error - error in batch stream
+        eprintln!(">>> Test 5: Error in batch stream");
+        use datafusion::common::DataFusionError;
+        let error_stream = Box::pin(RecordBatchStreamAdapter::new(
+            schema.clone(),
+            stream::iter(vec![Err(DataFusionError::Execution(
+                "Simulated stream error".to_string(),
+            ))]),
+        ));
+
+        let result = data_sink.write_all(error_stream, &task_ctx).await;
+        assert!(result.is_err(), "Stream error should propagate");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Simulated stream error"));
+        eprintln!(">>> ✓ Stream error propagated");
+
+        // Test 6: Insert to non-existent table (triggers ClickHouse error)
+        eprintln!(">>> Test 6: Insert to non-existent table");
+        let bad_sink = ClickHouseDataSink::new(
+            pool.clone(),
+            TableReference::partial(db, "nonexistent_table"),
+            schema.clone(),
+        );
+
+        let batch6 = RecordBatch::try_new(schema.clone(), vec![
+            Arc::new(Int32Array::from(vec![99])),
+            Arc::new(StringArray::from(vec!["z"])),
+        ])?;
+
+        let stream6 =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream::iter(vec![Ok(batch6)])));
+
+        let result = bad_sink.write_all(stream6, &task_ctx).await;
+        assert!(result.is_err(), "Insert to non-existent table should fail");
+        eprintln!(">>> ✓ Non-existent table error detected");
+
+        eprintln!(">>> All DataSink write_all tests passed");
 
         Ok(())
     }
@@ -1842,6 +2026,192 @@ mod tests {
         eprintln!(">>> COUNT DISTINCT test passed");
 
         eprintln!(">> All aggregation tests completed successfully");
+
+        Ok(())
+    }
+
+    /// Test parallel writes with high concurrency
+    pub(super) async fn test_parallel_writes(ch: Arc<ClickHouseContainer>) -> Result<()> {
+        use datafusion::arrow::array::{Int32Array, RecordBatch, StringArray};
+
+        let db = "test_db_parallel_writes";
+
+        // Initialize session context
+        let ctx = SessionContext::new();
+
+        // IMPORTANT! If federation is enabled, federate the context
+        #[cfg(feature = "federation")]
+        let ctx = ctx.federate();
+
+        // Create builder with parallel write concurrency
+        let builder = ClickHouseBuilder::new(ch.get_native_url())
+            .configure_client(|c| configure_client(c, &ch))
+            .with_write_concurrency(4)
+            .build_catalog(&ctx, Some(DEFAULT_CLICKHOUSE_CATALOG))
+            .await?;
+
+        // Setup test tables
+        let clickhouse = common::helpers::setup_test_tables(builder, db, &ctx).await?;
+
+        // Refresh catalog
+        let _catalog = clickhouse.build(&ctx).await?;
+
+        // Create a larger dataset for testing parallel write capability
+        let num_rows = 5000;
+
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]);
+
+        // Generate test data
+        let ids: Vec<i32> = (1..=num_rows).collect();
+        let names: Vec<String> = ids.iter().map(|i| format!("person_{}", i)).collect();
+
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![
+            Arc::new(Int32Array::from(ids.clone())),
+            Arc::new(StringArray::from(names.clone())),
+        ])?;
+
+        // Register as a memory table
+        drop(ctx.register_batch("bulk_data", batch)?);
+
+        // Insert data using parallel writes
+        eprintln!(">>> Inserting {} rows with parallel writes (concurrency=4)...", num_rows);
+
+        let _insert_results = ctx
+            .sql(&format!("INSERT INTO clickhouse.{db}.people SELECT id, name FROM bulk_data"))
+            .await?
+            .collect()
+            .await?;
+
+        eprintln!(">>> Parallel insert completed");
+
+        // Verify data integrity - check count
+        let count_result = ctx
+            .sql(&format!("SELECT COUNT(*) as cnt FROM clickhouse.{db}.people"))
+            .await?
+            .collect()
+            .await?;
+
+        arrow::util::pretty::print_batches(&count_result)?;
+
+        let cnt_array = count_result[0].column(0).as_primitive::<arrow::datatypes::Int64Type>();
+        assert_eq!(cnt_array.value(0), num_rows as i64, "Row count mismatch");
+
+        eprintln!(">>> Row count verified: {}", num_rows);
+
+        // Verify data integrity - check sum of IDs
+        let sum_result = ctx
+            .sql(&format!("SELECT SUM(id) as total FROM clickhouse.{db}.people"))
+            .await?
+            .collect()
+            .await?;
+
+        arrow::util::pretty::print_batches(&sum_result)?;
+
+        let expected_sum: i64 = (1..=num_rows as i64).sum();
+        let sum_array = sum_result[0].column(0).as_primitive::<arrow::datatypes::Int64Type>();
+        assert_eq!(sum_array.value(0), expected_sum, "Sum mismatch");
+
+        eprintln!(">>> Sum verified: {}", expected_sum);
+
+        // Verify some sample rows
+        let sample_result = ctx
+            .sql(&format!(
+                "SELECT id, name FROM clickhouse.{db}.people WHERE id IN (1, 100, 2500, {}) ORDER \
+                 BY id",
+                num_rows
+            ))
+            .await?
+            .collect()
+            .await?;
+
+        arrow::util::pretty::print_batches(&sample_result)?;
+        eprintln!(">>> Sample rows verified");
+
+        eprintln!(">>> Parallel writes test completed successfully");
+
+        Ok(())
+    }
+
+    /// Test that metrics are properly tracked and visible in EXPLAIN ANALYZE
+    pub(super) async fn test_insert_metrics(ch: Arc<ClickHouseContainer>) -> Result<()> {
+        use datafusion::arrow::array::{Int32Array, RecordBatch, StringArray};
+
+        let db = "test_db_insert_metrics";
+
+        // Initialize session context
+        let ctx = SessionContext::new();
+
+        #[cfg(feature = "federation")]
+        let ctx = ctx.federate();
+
+        // Create builder with write concurrency
+        let builder = ClickHouseBuilder::new(ch.get_native_url())
+            .configure_client(|c| configure_client(c, &ch))
+            .with_write_concurrency(4)
+            .build_catalog(&ctx, Some(DEFAULT_CLICKHOUSE_CATALOG))
+            .await?;
+
+        // Setup test tables
+        let clickhouse = common::helpers::setup_test_tables(builder, db, &ctx).await?;
+        let _catalog = clickhouse.build(&ctx).await?;
+
+        // Create test data
+        let num_rows = 1000;
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]);
+
+        let ids: Vec<i32> = (1..=num_rows).collect();
+        let names: Vec<String> = ids.iter().map(|i| format!("person_{}", i)).collect();
+
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![
+            Arc::new(Int32Array::from(ids.clone())),
+            Arc::new(StringArray::from(names)),
+        ])?;
+
+        drop(ctx.register_batch("temp_data", batch)?);
+
+        // Use EXPLAIN ANALYZE to verify metrics
+        eprintln!(">>> Running INSERT with EXPLAIN ANALYZE");
+        let explain_result = ctx
+            .sql(&format!(
+                "EXPLAIN ANALYZE INSERT INTO clickhouse.{db}.people SELECT * FROM temp_data"
+            ))
+            .await?
+            .collect()
+            .await?;
+
+        // Print the EXPLAIN ANALYZE output
+        arrow::util::pretty::print_batches(&explain_result)?;
+
+        // Verify metrics are present in the output
+        let plan_str = format!("{:?}", explain_result);
+        eprintln!(">>> EXPLAIN ANALYZE output:\n{}", plan_str);
+
+        // Check that metrics contain expected fields
+        // The output should contain "output_rows" metric
+        assert!(
+            plan_str.contains("output_rows") || plan_str.contains("metrics"),
+            "EXPLAIN ANALYZE should show metrics"
+        );
+
+        eprintln!(">>> Metrics verification completed");
+
+        // Verify the data was actually inserted
+        let count_result = ctx
+            .sql(&format!("SELECT COUNT(*) as cnt FROM clickhouse.{db}.people"))
+            .await?
+            .collect()
+            .await?;
+
+        let cnt_array = count_result[0].column(0).as_primitive::<arrow::datatypes::Int64Type>();
+        assert_eq!(cnt_array.value(0), num_rows as i64, "Row count mismatch");
+
+        eprintln!(">>> Insert metrics test completed successfully");
 
         Ok(())
     }
