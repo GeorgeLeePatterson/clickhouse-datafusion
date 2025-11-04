@@ -121,7 +121,7 @@ mod tests {
         #[cfg(feature = "federation")]
         let ctx = ctx.federate();
 
-        let builder = common::helpers::create_builder(&ctx, &ch).await?;
+        let builder = common::helpers::create_builder_with_pool(&ctx, &ch).await?;
         let clickhouse = common::helpers::setup_test_tables(builder, db, &ctx).await?;
 
         // -----------------------------

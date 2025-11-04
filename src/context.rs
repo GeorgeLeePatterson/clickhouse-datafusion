@@ -1,14 +1,9 @@
-// TODO: Docs - Improve documentation for this module.
-//! This module contains important structures and utilities. To fully support `ClickHouse` UDFs, the
-//! [`ClickHouseQueryPlanner`] must be used since it provides the [`ClickHouseExtensionPlanner`].
-//!
-//! Additionally note how [`ClickHouseQueryPlanner`] provides `ClickHouseQueryPlanner::with_planner`
-//! to allow stacking planners, ensuring the `ClickHouseQueryPlanner` is on top.
-//!
-//! Equally as important is [`ClickHouseSessionContext`]. `DataFusion` doesn't support providing a
-//! custom `SessionContextProvider` (impl `ContextProvider`). Currently this is the only way to
-//! prevent the "optimization" away of UDFs that are meant to be pushed down to `ClickHouse`.
-/// TEST
+//! Core helpers for adapting a [`SessionContext`] to `ClickHouse` semantics.
+//! The types defined here keep ClickHouse-specific UDFs, query planners, and
+//! optimiser rules intact while still exposing DataFusion’s familiar APIs.
+//! [`ClickHouseQueryPlanner`] can be stacked with additional extension planners,
+//! while [`ClickHouseSessionContext`] ensures the rebuilt session keeps remote
+//! pushdown logic, custom UDFs, and any caller-provided configuration.
 pub mod plan_node;
 pub mod planner;
 
@@ -70,8 +65,9 @@ pub fn prepare_session_context(
     // Pull out state
     let state = ctx.state();
     let config = state.config().clone();
-    // TODO: Re-enable if function's opt into ident normalization configuration
-    // // By default, disable `ident normalization`
+    // NOTE: ClickHouse identifiers are case-sensitive. We keep DataFusion's
+    // default normalisation behaviour for now; once ClickHouse functions can
+    // opt in explicitly we can revisit toggling the parser option here.
     // let config = if config.options().sql_parser.enable_ident_normalization {
     //     config.set_bool("datafusion.sql_parser.enable_ident_normalization", false)
     // } else {
@@ -136,7 +132,8 @@ impl Default for ClickHouseQueryPlanner {
 }
 
 impl ClickHouseQueryPlanner {
-    // TODO: Docs
+    /// Construct a planner pre-loaded with the `ClickHouse` extension planner
+    /// (and the federation planner when that feature is enabled).
     pub fn new() -> Self {
         let planners = vec![
             #[cfg(feature = "federation")]
@@ -146,14 +143,16 @@ impl ClickHouseQueryPlanner {
         ClickHouseQueryPlanner { planners }
     }
 
-    // TODO: Docs
+    /// Construct a planner and append additional extension planners provided
+    /// by the caller.  These planners execute after the built-in `ClickHouse`
+    /// extensions.
     pub fn new_with_planners(planners: Vec<Arc<dyn ExtensionPlanner + Send + Sync>>) -> Self {
         let mut this = Self::new();
         this.planners.extend(planners);
         this
     }
 
-    // TODO: Docs
+    /// Append a single extension planner to an existing `ClickHouseQueryPlanner`.
     #[must_use]
     pub fn with_planner(mut self, planner: Arc<dyn ExtensionPlanner + Send + Sync>) -> Self {
         self.planners.push(planner);
@@ -175,6 +174,12 @@ impl QueryPlanner for ClickHouseQueryPlanner {
 }
 
 /// Wrapper for [`SessionContext`] which allows running arbitrary `ClickHouse` functions.
+///
+/// The wrapper rebuilds the supplied `SessionContext` with ClickHouse-specific
+/// optimisers, query planner extensions, and registered UDFs. If your application
+/// had additional session customisations (for example custom catalogs, URL-table
+/// support, or runtime configuration) call [`ClickHouseSessionContext::with_session_transform`]
+/// to re-apply them after construction.
 #[derive(Clone)]
 pub struct ClickHouseSessionContext {
     inner:        SessionContext,
@@ -182,7 +187,11 @@ pub struct ClickHouseSessionContext {
 }
 
 impl ClickHouseSessionContext {
-    // TODO: Docs
+    /// Wrap a [`SessionContext`] with ClickHouse-specific planners and analyser rules.
+    ///
+    /// Optional extension planners can be provided to further customise physical
+    /// planning.  Any additional configuration can be re-applied later via
+    /// [`with_session_transform`](Self::with_session_transform).
     pub fn new(
         ctx: SessionContext,
         extension_planners: Option<Vec<Arc<dyn ExtensionPlanner + Send + Sync>>>,
@@ -196,13 +205,43 @@ impl ClickHouseSessionContext {
         self
     }
 
+    /// Apply a caller-provided transformation to the underlying [`SessionContext`].
+    ///
+    /// This is useful when existing configuration needs to be preserved across the
+    /// internal context rebuild performed by [`ClickHouseSessionContext`]. For example,
+    /// consumers that enabled features such as `SessionContext::enable_url_table`
+    /// prior to constructing the wrapper can re-apply that configuration via:
+    ///
+    /// ```rust,ignore
+    /// # use datafusion::prelude::*;
+    /// # use clickhouse_datafusion::ClickHouseSessionContext;
+    /// let base = SessionContext::new();
+    /// let clickhouse_ctx = ClickHouseSessionContext::from(base)
+    ///     .with_session_transform(|ctx| ctx.enable_url_table());
+    /// ```
+    ///
+    /// The provided closure consumes the current `SessionContext` and must return
+    /// a (potentially modified) instance. The ClickHouse-specific configuration,
+    /// such as registered UDFs and custom planners, remains intact.
+    #[must_use]
+    pub fn with_session_transform<F>(mut self, transform: F) -> Self
+    where
+        F: FnOnce(SessionContext) -> SessionContext,
+    {
+        self.inner = transform(self.inner);
+        self
+    }
+
     /// Access the underlying session context by reference.
     pub fn session_context(&self) -> &SessionContext { &self.inner }
 
-    // TODO: Docs - especially mention that using the provided context WILL NOT WORK with pushdown
+    /// Consume the wrapper and return the underlying [`SessionContext`].
+    ///
+    /// This bypasses the `ClickHouse` convenience APIs; further calls must ensure
+    /// pushdown-related configuration stays consistent.
     pub fn into_session_context(self) -> SessionContext { self.inner }
 
-    // TODO: Docs - mention and link reference to the `sql` method on SessionContext
+    /// Execute SQL using the ClickHouse-aware session (see [`SessionContext::sql`]).
     /// # Errors
     ///
     /// Returns an error if the SQL query is invalid or if the query execution fails.
@@ -210,7 +249,7 @@ impl ClickHouseSessionContext {
         self.sql_with_options(sql, SQLOptions::new()).await
     }
 
-    // TODO: Docs - mention and link reference to the `sql_with_options` method on SessionContext
+    /// Execute SQL with custom [`SQLOptions`] using the ClickHouse-aware session.
     /// # Errors
     ///
     /// Returns an error if the SQL query is invalid or if the query execution fails.
@@ -222,10 +261,11 @@ impl ClickHouseSessionContext {
         self.execute_logical_plan(plan).await
     }
 
-    // TODO: Docs - mention and link reference to the `statement_to_plan` method on SessionContext
-    // TODO: Dev - move this logic into a function, to allow use of standard SessionContext
-    // (bootstrapped of course)
-    //
+    /// Convert a SQL statement into a logical plan using ClickHouse-specific resolution.
+    ///
+    /// This mirrors [`SessionContext::statement_to_plan`] while routing table and
+    /// function resolution through [`ClickHouseContextProvider`] so `ClickHouse` UDFs
+    /// and remote catalog entries remain accessible.
     /// # Errors
     /// - Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn statement_to_plan(
@@ -245,8 +285,8 @@ impl ClickHouseSessionContext {
         };
 
         for reference in references {
-            // DEV (DataFusion PR): Post PR that makes `resolve_table_ref` pub and access to tables
-            // entries: let resolved = state.resolve_table_ref(reference);
+            // Recreate DataFusion's internal resolution so ClickHouse tables that
+            // are not yet registered locally can be discovered on demand.
             let catalog = &state.config_options().catalog;
             let resolved = reference.resolve(&catalog.default_catalog, &catalog.default_schema);
             if let Entry::Vacant(v) = provider.tables.entry(resolved) {
@@ -431,7 +471,7 @@ impl ContextProvider for ClickHouseContextProvider {
 
     fn options(&self) -> &ConfigOptions { self.state.config_options() }
 
-    // TODO: Does this behave well with the logic above in `get_function_meta`?
+    /// Return the names of registered scalar UDFs.
     fn udf_names(&self) -> Vec<String> { self.state.scalar_functions().keys().cloned().collect() }
 
     fn udaf_names(&self) -> Vec<String> {

@@ -44,8 +44,8 @@ use std::sync::Arc;
 
 use clickhouse_arrow::prelude::ClickHouseEngine;
 use clickhouse_arrow::{
-    ArrowConnectionPoolBuilder, ArrowOptions, ArrowPoolBuilder, ClientBuilder, CreateOptions,
-    Destination,
+    ArrowConnectionManager, ArrowConnectionPoolBuilder, ArrowOptions, ArrowPoolBuilder,
+    ClientBuilder, CreateOptions, Destination,
 };
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{CatalogProvider, TableProviderFactory};
@@ -108,6 +108,10 @@ impl ClickHouseBuilder {
         }
     }
 
+    /// Create new `ClickHouseBuilder` that can be used to configure both the
+    /// [`clickhouse_arrow::ClientBuilder`], the [`clickhouse_arrow::ArrowPoolBuilder`], and be
+    /// "built" into a [`ClickHouseCatalogBuilder`] for interacting with `ClickHouse` databases and
+    /// tables.
     pub fn new_with_pool_builder(
         endpoint: impl Into<Destination>,
         pool_builder: ArrowConnectionPoolBuilder,
@@ -175,6 +179,36 @@ impl ClickHouseBuilder {
             c.with_arrow_options(f(options))
         });
         self
+    }
+
+    /// Build ensures `ClickHouse` builtins are registered (such as nested functions), the pool is
+    /// attached to the factory, the `ClickHouse` endpoint is reachable, and the catalog is created
+    /// and registered to the [`SessionContext`].
+    ///
+    /// NOTE: The `pool_identifier` is used in the case when `federation` is enabled. It will
+    /// indicate if the underlying connection references the same connection or not.
+    ///
+    /// # Errors
+    /// - Returns an error if the `ClickHouse` endpoint is unreachable
+    /// - Returns an error if the `ClickHouse` catalog fails to be created
+    pub async fn build_catalog_from_pool(
+        ctx: &SessionContext,
+        endpoint: impl Into<String>,
+        catalog: Option<&str>,
+        pool_identifier: impl Into<String>,
+        pool: clickhouse_arrow::bb8::Pool<ArrowConnectionManager>,
+    ) -> Result<ClickHouseCatalogBuilder> {
+        // Register built in functions and clickhouse udfs
+        register_builtins(ctx);
+
+        let catalog = catalog.unwrap_or(DEFAULT_CLICKHOUSE_CATALOG).to_string();
+        debug!(catalog, "Attaching pool to ClickHouse table factory");
+
+        let endpoint = endpoint.into();
+        let factory = ClickHouseTableProviderFactory::new();
+        let pool = Arc::new(factory.attach_pool(&endpoint, pool_identifier, pool));
+
+        ClickHouseCatalogBuilder::try_new(ctx, catalog, "", endpoint, pool, factory).await
     }
 
     /// Build ensures `ClickHouse` builtins are registered (such as nested functions), the pool is
