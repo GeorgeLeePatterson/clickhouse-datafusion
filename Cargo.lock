@@ -791,9 +791,9 @@ dependencies = [
 
 [[package]]
 name = "clickhouse-arrow"
-version = "0.1.7"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74976a092a97a3364d19f522cae8c051c8a2ec435141fa90ed252dfcd795e846"
+checksum = "a946527a2c0eb6ebf0f49069dacde950e2810b80a2be77ff854e66933ea36bdd"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -832,9 +832,9 @@ dependencies = [
 
 [[package]]
 name = "clickhouse-arrow-derive"
-version = "0.1.7"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51d783d63d680e2f079dd612b257b77327949d46dd8e1544ea973ec50548dcf4"
+checksum = "ba6b6b63332245c2cb5bb27ae263ef4dcb7fd09649f330ca9a991866c3236e9b"
 dependencies = [
  "proc-macro2",
  "quote",
