@@ -24,7 +24,7 @@ mocks = []                                                # Used for unit tests 
 
 [dependencies]
 async-trait = "0.1"
-clickhouse-arrow = { version = "0.1.7" }
+clickhouse-arrow = { version = "0.2.0" }
 dashmap = "6"
 datafusion = "50"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
