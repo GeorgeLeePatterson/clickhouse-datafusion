@@ -40,8 +40,11 @@ pub type ArrowPool = ();
 #[derive(Debug, Clone)]
 pub struct ClickHouseConnectionPool {
     // "mocks" feature affects mainly this property and other properties related to connecting.
-    pool:           ArrowPool,
-    join_push_down: JoinPushDown,
+    pool:              ArrowPool,
+    join_push_down:    JoinPushDown,
+    /// Number of concurrent write operations allowed when inserting data.
+    /// Defaults to 4 (matching clickhouse-arrow's current connection pool limit).
+    write_concurrency: usize,
 }
 
 impl ClickHouseConnectionPool {
@@ -50,8 +53,23 @@ impl ClickHouseConnectionPool {
     pub fn new(identifier: impl Into<String>, pool: ArrowPool) -> Self {
         debug!("Creating new ClickHouse connection pool");
         let join_push_down = JoinPushDown::AllowedFor(identifier.into());
-        Self { pool, join_push_down }
+        Self { pool, join_push_down, write_concurrency: 4 }
     }
+
+    /// Set the write concurrency level for INSERT operations.
+    ///
+    /// This controls how many record batches can be written to `ClickHouse` concurrently.
+    /// Higher values may improve throughput but increase memory and connection usage.
+    ///
+    /// Default: 4 (matching clickhouse-arrow's current connection pool limit)
+    #[must_use]
+    pub fn with_write_concurrency(mut self, concurrency: usize) -> Self {
+        self.write_concurrency = concurrency;
+        self
+    }
+
+    /// Get the configured write concurrency level
+    pub fn write_concurrency(&self) -> usize { self.write_concurrency }
 
     /// Create a new `ClickHouse` connection pool from a builder.
     ///

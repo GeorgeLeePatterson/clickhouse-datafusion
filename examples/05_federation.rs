@@ -146,6 +146,7 @@ mod federated_example {
             "   You can also federate with Parquet files, CSV files, and other DataFusion sources!"
         );
 
+        let _ = ch.shutdown().await.ok();
         Ok(())
     }
 }

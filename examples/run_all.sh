@@ -5,6 +5,9 @@
 
 set -e  # Exit immediately if any command fails
 
+# Start total timer
+total_start=$(date +%s)
+
 echo "🚀 Running all clickhouse-datafusion examples..."
 echo "================================================"
 echo ""
@@ -33,11 +36,18 @@ while IFS=$'\t' read -r example features; do
     echo "[$current/$total] Running example: $example (features: $features)"
     echo "---------------------------------------------------"
 
-    if cargo run --example "$example" --features "$features" > /dev/null 2>&1; then
-        echo "✅ PASS: $example"
+    # Start example timer
+    example_start=$(date +%s)
+
+    if cargo run --example "$example" --features "$features" --release > /dev/null 2>&1; then
+        example_end=$(date +%s)
+        elapsed=$((example_end - example_start))
+        echo "✅ PASS: $example (${elapsed}s)"
         passed=$((passed + 1))
     else
-        echo "❌ FAIL: $example"
+        example_end=$(date +%s)
+        elapsed=$((example_end - example_start))
+        echo "❌ FAIL: $example (${elapsed}s)"
         failed=$((failed + 1))
         echo ""
         echo "Example $example failed. Aborting..."
@@ -48,8 +58,12 @@ while IFS=$'\t' read -r example features; do
 done <<< "$examples_data"
 
 # Summary
+total_end=$(date +%s)
+total_elapsed=$((total_end - total_start))
+
 echo "================================================"
 echo "✅ All examples passed! ($passed/$total)"
+echo "⏱️  Total time: ${total_elapsed}s"
 echo "================================================"
 
 exit 0
