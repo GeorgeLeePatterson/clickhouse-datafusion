@@ -26,7 +26,7 @@ mocks = []                                                # Used for unit tests 
 async-trait = "0.1"
 clickhouse-arrow = "0.2.0"
 dashmap = "6"
-datafusion = "50"
+datafusion = "51"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 pin-project = "1"
