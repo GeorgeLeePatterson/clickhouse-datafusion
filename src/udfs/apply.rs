@@ -101,24 +101,7 @@ pub(crate) struct ClickHouseApplyRewriter {
 
 impl ClickHouseApplyRewriter {
     pub(crate) fn try_new(expr: &Expr) -> Result<Self> {
-        if !is_clickhouse_lambda(expr) {
-            return plan_err!("Unknown function passed to ClickHouseApplyRewriter");
-        }
-
-        let Expr::ScalarFunction(ScalarFunction { func, args }) = expr else {
-            // Guaranteed by `is_clickhouse_lambda`
-            unreachable!();
-        };
-
-        // Unwrap the aliased function if it's wrapped
-        let (name, mut args) = if CLICKHOUSE_APPLY_ALIASES.contains(&func.name()) {
-            let Some(Expr::ScalarFunction(ScalarFunction { func, args })) = args.first() else {
-                return plan_err!("ClickHouseApplyUDF must be higher order function");
-            };
-            (func.name().to_string(), args.clone())
-        } else {
-            (func.name().to_string(), args.clone())
-        };
+        let (name, mut args) = unwrap_clickhouse_lambda(expr)?;
 
         // Attempt to extract data type from the last argument, unused
         let _data_type = args
@@ -233,12 +216,30 @@ impl ClickHouseApplyRewriter {
     }
 }
 
-pub(crate) fn is_clickhouse_lambda(expr: &Expr) -> bool {
-    let Expr::ScalarFunction(ScalarFunction { func, args }) = expr else {
-        return false;
+pub(crate) fn unwrap_clickhouse_lambda(expr: &Expr) -> Result<(String, Vec<Expr>)> {
+    let inner_expr = if let Expr::Alias(e) = expr { &e.expr } else { expr };
+
+    // Must be a scalar function
+    let Expr::ScalarFunction(ScalarFunction { func, args }) = inner_expr else {
+        return plan_err!("Unknown expression passed to ClickHouseApplyRewriter");
     };
-    CLICKHOUSE_APPLY_ALIASES.contains(&func.name())
-        || args.first().is_some_and(|a| matches!(a, Expr::Placeholder(_)))
+
+    // May be nested within an apply alias or may be a function with placeholder directly
+    Ok(if CLICKHOUSE_APPLY_ALIASES.contains(&func.name()) {
+        let Some(Expr::ScalarFunction(ScalarFunction { func: inner_func, args: inner_args })) =
+            args.first()
+        else {
+            return plan_err!("ClickHouseApplyUDF must be higher order function");
+        };
+
+        (inner_func.name().to_string(), inner_args.clone())
+    } else if args.first().is_some_and(|a| matches!(a, Expr::Placeholder(_))) {
+        // Unwrap Alias if present (DataFusion 51+ wraps UDF calls in Alias when
+        // called via an alias name like `lambda` instead of primary name `apply`)
+        (func.name().to_string(), args.clone())
+    } else {
+        return plan_err!("Unknown function passed to ClickHouseApplyRewriter");
+    })
 }
 
 pub(crate) fn extract_apply_args(
@@ -335,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_apply_rewriter() {
-        let placeholder = Placeholder::new("$x".to_string(), None);
+        let placeholder = Placeholder::new_with_field("$x".to_string(), None);
 
         // Ensure `extract_apply_args` works correctly
         let result = extract_apply_args(vec![Expr::Placeholder(placeholder.clone())]);

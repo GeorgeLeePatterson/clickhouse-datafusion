@@ -364,7 +364,13 @@ impl ClickHouseCatalogBuilder {
         let table = name.into();
         let options = CreateOptions::new(engine.into().to_string());
         debug!(schema = self.schema, table, ?options, "Initializing table creator");
-        ClickHouseTableCreator { name: table, builder: self.clone(), options, schema }
+        ClickHouseTableCreator {
+            name: table,
+            builder: self.clone(),
+            options,
+            schema,
+            replace: false,
+        }
     }
 
     /// Create a new table in the remote `ClickHouse` instance.
@@ -385,7 +391,13 @@ impl ClickHouseCatalogBuilder {
     ) -> ClickHouseTableCreator {
         let table = name.into();
         debug!(schema = self.schema, table, ?options, "Initializing table creator");
-        ClickHouseTableCreator { name: table, builder: self.clone(), options, schema }
+        ClickHouseTableCreator {
+            name: table,
+            builder: self.clone(),
+            options,
+            schema,
+            replace: false,
+        }
     }
 
     /// Register an existing `ClickHouse` table, optionally renaming it in the provided session
@@ -496,6 +508,8 @@ pub struct ClickHouseTableCreator {
     builder: ClickHouseCatalogBuilder,
     schema:  SchemaRef,
     options: CreateOptions,
+    /// Whether the create external table command will replace existing table
+    replace: bool,
 }
 
 impl ClickHouseTableCreator {
@@ -508,6 +522,13 @@ impl ClickHouseTableCreator {
         update: impl Fn(CreateOptions) -> CreateOptions,
     ) -> Self {
         self.options = update(self.options);
+        self
+    }
+
+    /// Set whether `DataFusion` will replace an existing table if it already exists.
+    #[must_use]
+    pub fn set_or_replace(mut self, replace: bool) -> Self {
+        self.replace = replace;
         self
     }
 
@@ -538,6 +559,7 @@ impl ClickHouseTableCreator {
             schema: Arc::new(DFSchema::try_from(Arc::clone(&self.schema))?),
             options,
             column_defaults,
+            or_replace: self.replace,
             constraints: Constraints::default(),
             table_partition_cols: vec![],
             if_not_exists: false,

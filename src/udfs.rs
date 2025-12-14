@@ -106,7 +106,7 @@ pub mod functions {
             .enumerate()
             .map(|(i, c)| {
                 (
-                    Expr::Placeholder(Placeholder { id: format!("x{i}"), data_type: None }),
+                    Expr::Placeholder(Placeholder { id: format!("x{i}"), field: None }),
                     Expr::Column(c),
                 )
             })
@@ -214,8 +214,8 @@ pub mod functions {
                             func: Arc::new(clickhouse_apply_udf()),
                             args: vec![
                                 Expr::Placeholder(Placeholder {
-                                    id:        "x0".to_string(),
-                                    data_type: None,
+                                    id:    "x0".to_string(),
+                                    field: None,
                                 }),
                                 Expr::Column(Column::from_name("id")) + lit(5),
                                 Expr::Column(Column::from_name("id")),

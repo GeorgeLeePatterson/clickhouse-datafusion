@@ -249,6 +249,7 @@ mod tests {
             constraints:          Constraints::default(),
             table_partition_cols: vec![],
             if_not_exists:        false,
+            or_replace:           false,
             location:             String::new(),
             file_type:            String::new(),
             temporary:            false,
@@ -1520,7 +1521,8 @@ mod tests {
         Ok(())
     }
 
-    /// Test ClickHouseDataSink write_all method with schema validation
+    /// Test `ClickHouseDataSink::write_all` method with schema validation
+    #[expect(clippy::too_many_lines)]
     pub(super) async fn test_sink_write_all(ch: Arc<ClickHouseContainer>) -> Result<()> {
         use clickhouse_arrow::prelude::ClickHouseEngine;
         use datafusion::arrow::array::{Int32Array, RecordBatch, StringArray};
@@ -1547,7 +1549,7 @@ mod tests {
         let clickhouse = builder
             .with_schema(db)
             .await?
-            .with_new_table("sink_test", ClickHouseEngine::MergeTree, schema.clone())
+            .with_new_table("sink_test", ClickHouseEngine::MergeTree, Arc::clone(&schema))
             .update_create_options(|opts| opts.with_order_by(&["id".to_string()]))
             .create(&ctx)
             .await?;
@@ -1564,17 +1566,20 @@ mod tests {
         let pool = Arc::clone(table_provider.pool());
 
         let sink_table_ref = TableReference::partial(db, "sink_test");
-        let data_sink = ClickHouseDataSink::new(pool.clone(), sink_table_ref, schema.clone());
+        let data_sink =
+            ClickHouseDataSink::new(Arc::clone(&pool), sink_table_ref, Arc::clone(&schema));
 
         // Test 1: Successful write with valid data
         eprintln!(">>> Test 1: Valid data write");
-        let batch1 = RecordBatch::try_new(schema.clone(), vec![
+        let batch1 = RecordBatch::try_new(Arc::clone(&schema), vec![
             Arc::new(Int32Array::from(vec![1, 2, 3])),
             Arc::new(StringArray::from(vec!["a", "b", "c"])),
         ])?;
 
-        let stream1 =
-            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream::iter(vec![Ok(batch1)])));
+        let stream1 = Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&schema),
+            stream::iter(vec![Ok(batch1)]),
+        ));
 
         let task_ctx = Arc::new(TaskContext::default());
         let result = data_sink.write_all(stream1, &task_ctx).await;
@@ -1585,8 +1590,9 @@ mod tests {
         // Test 2: Schema mismatch - field count
         eprintln!(">>> Test 2: Field count mismatch");
         let wrong_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let batch2 =
-            RecordBatch::try_new(wrong_schema.clone(), vec![Arc::new(Int32Array::from(vec![4]))])?;
+        let batch2 = RecordBatch::try_new(Arc::clone(&wrong_schema), vec![Arc::new(
+            Int32Array::from(vec![4]),
+        )])?;
 
         let stream2 =
             Box::pin(RecordBatchStreamAdapter::new(wrong_schema, stream::iter(vec![Ok(batch2)])));
@@ -1605,7 +1611,7 @@ mod tests {
             Field::new("id", DataType::Int64, false), // Wrong type
             Field::new("name", DataType::Utf8, false),
         ]));
-        let batch3 = RecordBatch::try_new(wrong_type_schema.clone(), vec![
+        let batch3 = RecordBatch::try_new(Arc::clone(&wrong_type_schema), vec![
             Arc::new(arrow::array::Int64Array::from(vec![5i64])),
             Arc::new(StringArray::from(vec!["d"])),
         ])?;
@@ -1627,7 +1633,7 @@ mod tests {
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, true), // Wrong nullability
         ]));
-        let batch4 = RecordBatch::try_new(wrong_nullable_schema.clone(), vec![
+        let batch4 = RecordBatch::try_new(Arc::clone(&wrong_nullable_schema), vec![
             Arc::new(Int32Array::from(vec![6])),
             Arc::new(StringArray::from(vec![Some("e")])),
         ])?;
@@ -1652,10 +1658,9 @@ mod tests {
 
         // Test 5: Stream error - error in batch stream
         eprintln!(">>> Test 5: Error in batch stream");
-        use datafusion::common::DataFusionError;
         let error_stream = Box::pin(RecordBatchStreamAdapter::new(
-            schema.clone(),
-            stream::iter(vec![Err(DataFusionError::Execution(
+            Arc::clone(&schema),
+            stream::iter(vec![Err(datafusion::common::DataFusionError::Execution(
                 "Simulated stream error".to_string(),
             ))]),
         ));
@@ -1669,18 +1674,20 @@ mod tests {
         // Test 6: Insert to non-existent table (triggers ClickHouse error)
         eprintln!(">>> Test 6: Insert to non-existent table");
         let bad_sink = ClickHouseDataSink::new(
-            pool.clone(),
+            Arc::clone(&pool),
             TableReference::partial(db, "nonexistent_table"),
-            schema.clone(),
+            Arc::clone(&schema),
         );
 
-        let batch6 = RecordBatch::try_new(schema.clone(), vec![
+        let batch6 = RecordBatch::try_new(Arc::clone(&schema), vec![
             Arc::new(Int32Array::from(vec![99])),
             Arc::new(StringArray::from(vec!["z"])),
         ])?;
 
-        let stream6 =
-            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream::iter(vec![Ok(batch6)])));
+        let stream6 = Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&schema),
+            stream::iter(vec![Ok(batch6)]),
+        ));
 
         let result = bad_sink.write_all(stream6, &task_ctx).await;
         assert!(result.is_err(), "Insert to non-existent table should fail");
@@ -2066,7 +2073,7 @@ mod tests {
 
         // Generate test data
         let ids: Vec<i32> = (1..=num_rows).collect();
-        let names: Vec<String> = ids.iter().map(|i| format!("person_{}", i)).collect();
+        let names: Vec<String> = ids.iter().map(|i| format!("person_{i}")).collect();
 
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![
             Arc::new(Int32Array::from(ids.clone())),
@@ -2077,7 +2084,7 @@ mod tests {
         drop(ctx.register_batch("bulk_data", batch)?);
 
         // Insert data using parallel writes
-        eprintln!(">>> Inserting {} rows with parallel writes (concurrency=4)...", num_rows);
+        eprintln!(">>> Inserting {num_rows} rows with parallel writes (concurrency=4)...");
 
         let _insert_results = ctx
             .sql(&format!("INSERT INTO clickhouse.{db}.people SELECT id, name FROM bulk_data"))
@@ -2097,9 +2104,9 @@ mod tests {
         arrow::util::pretty::print_batches(&count_result)?;
 
         let cnt_array = count_result[0].column(0).as_primitive::<arrow::datatypes::Int64Type>();
-        assert_eq!(cnt_array.value(0), num_rows as i64, "Row count mismatch");
+        assert_eq!(cnt_array.value(0), i64::from(num_rows), "Row count mismatch");
 
-        eprintln!(">>> Row count verified: {}", num_rows);
+        eprintln!(">>> Row count verified: {num_rows}");
 
         // Verify data integrity - check sum of IDs
         let sum_result = ctx
@@ -2110,18 +2117,17 @@ mod tests {
 
         arrow::util::pretty::print_batches(&sum_result)?;
 
-        let expected_sum: i64 = (1..=num_rows as i64).sum();
+        let expected_sum: i64 = (1..=i64::from(num_rows)).sum();
         let sum_array = sum_result[0].column(0).as_primitive::<arrow::datatypes::Int64Type>();
         assert_eq!(sum_array.value(0), expected_sum, "Sum mismatch");
 
-        eprintln!(">>> Sum verified: {}", expected_sum);
+        eprintln!(">>> Sum verified: {expected_sum}");
 
         // Verify some sample rows
         let sample_result = ctx
             .sql(&format!(
-                "SELECT id, name FROM clickhouse.{db}.people WHERE id IN (1, 100, 2500, {}) ORDER \
-                 BY id",
-                num_rows
+                "SELECT id, name FROM clickhouse.{db}.people WHERE id IN (1, 100, 2500, \
+                 {num_rows}) ORDER BY id"
             ))
             .await?
             .collect()
@@ -2166,7 +2172,7 @@ mod tests {
         ]);
 
         let ids: Vec<i32> = (1..=num_rows).collect();
-        let names: Vec<String> = ids.iter().map(|i| format!("person_{}", i)).collect();
+        let names: Vec<String> = ids.iter().map(|i| format!("person_{i}")).collect();
 
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![
             Arc::new(Int32Array::from(ids.clone())),
@@ -2189,8 +2195,8 @@ mod tests {
         arrow::util::pretty::print_batches(&explain_result)?;
 
         // Verify metrics are present in the output
-        let plan_str = format!("{:?}", explain_result);
-        eprintln!(">>> EXPLAIN ANALYZE output:\n{}", plan_str);
+        let plan_str = format!("{explain_result:?}");
+        eprintln!(">>> EXPLAIN ANALYZE output:\n{plan_str}");
 
         // Check that metrics contain expected fields
         // The output should contain "output_rows" metric
@@ -2209,7 +2215,7 @@ mod tests {
             .await?;
 
         let cnt_array = count_result[0].column(0).as_primitive::<arrow::datatypes::Int64Type>();
-        assert_eq!(cnt_array.value(0), num_rows as i64, "Row count mismatch");
+        assert_eq!(cnt_array.value(0), i64::from(num_rows), "Row count mismatch");
 
         eprintln!(">>> Insert metrics test completed successfully");
 

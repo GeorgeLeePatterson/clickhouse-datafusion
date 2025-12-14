@@ -20,13 +20,14 @@ cloud = ["clickhouse-arrow/cloud"]
 
 # For testing and examples
 test-utils = ["clickhouse-arrow/test-utils", "tokio/macros", "tokio/sync"]
-mocks = []                                                # Used for unit tests and connection mocking
+# Used for unit tests and connection mocking
+mocks = []
 
 [dependencies]
 async-trait = "0.1"
-clickhouse-arrow = "0.2.0"
+clickhouse-arrow = "0.2.1"
 dashmap = "6"
-datafusion = "50"
+datafusion = "51"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 parking_lot = "0.12"
 pin-project = "1"
@@ -41,7 +42,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # Note: Using crates.io version for publishing compatibility
 # Once PR #135 is merged upstream, we can update this dependency
 [dependencies.datafusion-federation]
-version = "0.4.10"
+version = "0.4.12"
 features = ["sql"]
 optional = true
 
@@ -176,3 +177,11 @@ required-features = ["test-utils"]
 [[test]]
 name = "e2e_stress"
 required-features = ["test-utils"]
+
+# Workaround for testcontainers incompatibility with bollard 0.19.5
+# bollard-stubs 1.49.3 made breaking changes to PortBinding type
+#
+# NOTE: No pending issue found yet
+# See: https://github.com/testcontainers/testcontainers-rs/issues/XXX
+[patch.crates-io]
+bollard = { git = "https://github.com/fussybeaver/bollard", tag = "v0.19.4" }

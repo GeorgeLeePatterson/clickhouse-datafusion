@@ -16,7 +16,7 @@ use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::catalog::cte_worktable::CteWorkTable;
 use datafusion::common::file_options::file_type::FileType;
 use datafusion::common::plan_datafusion_err;
-use datafusion::config::ConfigOptions;
+use datafusion::config::{ConfigOptions, Dialect};
 use datafusion::datasource::file_format::format_as_file_type;
 use datafusion::datasource::provider_as_source;
 use datafusion::error::Result;
@@ -255,7 +255,7 @@ impl ClickHouseSessionContext {
     /// Returns an error if the SQL query is invalid or if the query execution fails.
     pub async fn sql_with_options(&self, sql: &str, options: SQLOptions) -> Result<DataFrame> {
         let state = self.inner.state();
-        let statement = state.sql_to_statement(sql, "ClickHouse")?;
+        let statement = state.sql_to_statement(sql, &Dialect::ClickHouse)?;
         let plan = self.statement_to_plan(&state, statement).await?;
         options.verify_plan(&plan)?;
         self.execute_logical_plan(plan).await

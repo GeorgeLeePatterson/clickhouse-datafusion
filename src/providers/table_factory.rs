@@ -224,7 +224,7 @@ impl TableProviderFactory for ClickHouseTableProviderFactory {
 
         let name = cmd.name.clone();
         let mut params = cmd.options.clone();
-        let schema: SchemaRef = Arc::new(cmd.schema.as_ref().into());
+        let schema: SchemaRef = Arc::clone(cmd.schema.inner());
 
         // Pull out endpoint
         let endpoint =
