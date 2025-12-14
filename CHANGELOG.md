@@ -9,11 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+- Upgrades datafusion, addresses breaking changes ([#48](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/48)) ([4b1ebe1](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/4b1ebe13c98536a6e03800cc2ca9bd37e20c8cb5))
+
+### Features
+
+- Parallel writes with metrics tracking and comprehensive examples ([#36](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/36)) ([a11410b](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/a11410b2ba13d4184a04709fb97665d52b0dfe76))
+
+## [0.1.5] - 2025-10-29
+
+### Bug Fixes
+
 - Supports passing a pool directly to clickhouse builder ([#42](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/42)) ([3a4a25c](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/3a4a25c6621c06adcd7f94c724143d8ddf1eeee1))
 
 ### Miscellaneous Tasks
 
 - Upgrades dependencies ([d6177ca](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/d6177cad63ec82ff6c7e40446861e1d5ce7a84f5))
+- Prepare release v0.1.5 ([#43](https://github.com/georgeleepatterson/clickhouse-datafusion/issues/43)) ([95699f2](https://github.com/georgeleepatterson/clickhouse-datafusion/commit/95699f229f1750809c6239c5161fee76e4cf899b))
 
 ### Build
 

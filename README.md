@@ -27,7 +27,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-clickhouse-datafusion = "0.1.5"
+clickhouse-datafusion = "0.2.0"
 ```
 
 ### Basic Usage
