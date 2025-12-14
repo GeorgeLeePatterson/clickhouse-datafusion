@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_apply_rewriter() {
-        let placeholder = Placeholder::new("$x".to_string(), None);
+        let placeholder = Placeholder::new_with_field("$x".to_string(), None);
 
         // Ensure `extract_apply_args` works correctly
         let result = extract_apply_args(vec![Expr::Placeholder(placeholder.clone())]);

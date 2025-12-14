@@ -92,7 +92,7 @@ mod tests {
         let clickhouse = builder
             .with_schema(db)
             .await?
-            .with_new_table("stress_table", ClickHouseEngine::MergeTree, schema.clone())
+            .with_new_table("stress_table", ClickHouseEngine::MergeTree, Arc::clone(&schema))
             .update_create_options(|opts| opts.with_order_by(&["id".into()]))
             .create(&ctx)
             .await?
@@ -115,14 +115,14 @@ mod tests {
         for batch_num in 0..num_batches {
             let offset = batch_num * batch_size;
             let ids: Vec<i32> = (offset..offset + batch_size).collect();
-            let names: Vec<String> = ids.iter().map(|i| format!("user_{}", i)).collect();
+            let names: Vec<String> = ids.iter().map(|i| format!("user_{i}")).collect();
 
-            let batch = RecordBatch::try_new(schema.clone(), vec![
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
                 Arc::new(Int32Array::from(ids)),
                 Arc::new(StringArray::from(names)),
             ])?;
 
-            let temp_table = format!("temp_data_{}", batch_num);
+            let temp_table = format!("temp_data_{batch_num}");
             drop(ctx.register_batch(&temp_table, batch)?);
 
             let _result = ctx
@@ -142,7 +142,7 @@ mod tests {
         eprintln!(
             ">>> Completed in {:?} ({:.0} rows/sec)",
             duration,
-            (num_batches * batch_size) as f64 / duration.as_secs_f64()
+            f64::from(num_batches * batch_size) / duration.as_secs_f64()
         );
 
         // Verify
@@ -186,7 +186,7 @@ mod tests {
         let clickhouse = builder
             .with_schema(db)
             .await?
-            .with_new_table("stress_table", ClickHouseEngine::MergeTree, schema.clone())
+            .with_new_table("stress_table", ClickHouseEngine::MergeTree, Arc::clone(&schema))
             .update_create_options(|opts| opts.with_order_by(&["id".into()]))
             .create(&ctx)
             .await?
@@ -206,12 +206,12 @@ mod tests {
             let ids: Vec<i32> = (offset..offset + batch_size).collect();
             let values: Vec<i32> = ids.iter().map(|i| i * 2).collect();
 
-            let batch = RecordBatch::try_new(schema.clone(), vec![
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
                 Arc::new(Int32Array::from(ids)),
                 Arc::new(Int32Array::from(values)),
             ])?;
 
-            let temp_table = format!("temp_data_{}", batch_num);
+            let temp_table = format!("temp_data_{batch_num}");
             drop(ctx.register_batch(&temp_table, batch)?);
 
             let _result = ctx
@@ -224,7 +224,7 @@ mod tests {
         }
 
         let duration = start.elapsed();
-        eprintln!(">>> Completed in {:?} (no deadlocks or hangs)", duration);
+        eprintln!(">>> Completed in {duration:?} (no deadlocks or hangs)");
 
         let count = ctx
             .sql(&format!("SELECT COUNT(*) FROM clickhouse.{db}.stress_table"))
@@ -265,7 +265,7 @@ mod tests {
         let clickhouse = builder
             .with_schema(db)
             .await?
-            .with_new_table("stress_table", ClickHouseEngine::MergeTree, schema.clone())
+            .with_new_table("stress_table", ClickHouseEngine::MergeTree, Arc::clone(&schema))
             .update_create_options(|opts| opts.with_order_by(&["id".into()]))
             .create(&ctx)
             .await?
@@ -276,18 +276,18 @@ mod tests {
 
         // Simulate heavy concurrent load that caused overflow
         let num_operations = 36;
-        eprintln!(">>> Running {} concurrent insert operations...", num_operations);
+        eprintln!(">>> Running {num_operations} concurrent insert operations...");
 
         for op in 0..num_operations {
             let ids: Vec<i32> = (op * 100..(op + 1) * 100).collect();
-            let data: Vec<String> = ids.iter().map(|i| format!("data_{}", i)).collect();
+            let data: Vec<String> = ids.iter().map(|i| format!("data_{i}")).collect();
 
-            let batch = RecordBatch::try_new(schema.clone(), vec![
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
                 Arc::new(Int32Array::from(ids)),
                 Arc::new(StringArray::from(data)),
             ])?;
 
-            let temp_table = format!("temp_data_{}", op);
+            let temp_table = format!("temp_data_{op}");
             drop(ctx.register_batch(&temp_table, batch)?);
 
             let _result = ctx
@@ -316,7 +316,7 @@ mod tests {
     }
 
     /// Test 4: Multi-Client Parallel Inserts
-    /// Simulate multiple DataFusion contexts writing simultaneously
+    /// Simulate multiple `DataFusion` contexts writing simultaneously
     pub(super) async fn test_multi_client_inserts(ch: Arc<ClickHouseContainer>) -> Result<()> {
         let db = "stress_multi_client";
         eprintln!("\n=== Test 4: Multi-Client Parallel Inserts ===");
@@ -367,6 +367,7 @@ mod tests {
         eprintln!(">>> Running concurrent inserts from 3 clients...");
 
         // Run inserts concurrently
+        #[expect(clippy::disallowed_methods)]
         let handles = vec![
             tokio::spawn(insert_from_client(ctx1, db, 1, 1000)),
             tokio::spawn(insert_from_client(ctx2, db, 2, 1000)),
@@ -389,6 +390,7 @@ mod tests {
         num_rows: i32,
     ) -> Result<()> {
         let ids: Vec<i32> = (0..num_rows).collect();
+        #[expect(clippy::cast_sign_loss)]
         let client_ids: Vec<i32> = vec![client_id; num_rows as usize];
 
         let schema = Arc::new(Schema::new(vec![
@@ -401,19 +403,18 @@ mod tests {
             Arc::new(Int32Array::from(client_ids)),
         ])?;
 
-        let temp_table = format!("temp_data_client_{}", client_id);
+        let temp_table = format!("temp_data_client_{client_id}");
         drop(ctx.register_batch(&temp_table, batch)?);
 
         let _result = ctx
             .sql(&format!(
-                "INSERT INTO clickhouse_{}.{}.stress_table SELECT * FROM {temp_table}",
-                client_id, db
+                "INSERT INTO clickhouse_{client_id}.{db}.stress_table SELECT * FROM {temp_table}"
             ))
             .await?
             .collect()
             .await?;
 
-        eprintln!("  Client {} completed", client_id);
+        eprintln!("  Client {client_id} completed");
         Ok(())
     }
 
@@ -443,7 +444,7 @@ mod tests {
         let clickhouse = builder
             .with_schema(db)
             .await?
-            .with_new_table("stress_table", ClickHouseEngine::MergeTree, schema.clone())
+            .with_new_table("stress_table", ClickHouseEngine::MergeTree, Arc::clone(&schema))
             .update_create_options(|opts| opts.with_order_by(&["id".into()]))
             .create(&ctx)
             .await?
@@ -458,12 +459,12 @@ mod tests {
             let ids: Vec<i32> = (i * 10..(i + 1) * 10).collect();
             let values: Vec<i32> = ids.clone();
 
-            let batch = RecordBatch::try_new(schema.clone(), vec![
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
                 Arc::new(Int32Array::from(ids)),
                 Arc::new(Int32Array::from(values)),
             ])?;
 
-            let temp_table = format!("temp_data_{}", i);
+            let temp_table = format!("temp_data_{i}");
             drop(ctx.register_batch(&temp_table, batch)?);
 
             let _result = ctx
@@ -510,7 +511,7 @@ mod tests {
         let clickhouse = builder
             .with_schema(db)
             .await?
-            .with_new_table("stress_table", ClickHouseEngine::MergeTree, schema.clone())
+            .with_new_table("stress_table", ClickHouseEngine::MergeTree, Arc::clone(&schema))
             .update_create_options(|opts| opts.with_order_by(&["id".into()]))
             .create(&ctx)
             .await?
@@ -522,20 +523,20 @@ mod tests {
         let num_batches = 10;
         let batch_size = 100_000;
 
-        eprintln!(">>> Inserting {} large batches...", num_batches);
+        eprintln!(">>> Inserting {num_batches} large batches...");
         let start = Instant::now();
 
         for batch_num in 0..num_batches {
             let offset = batch_num * batch_size;
             let ids: Vec<i32> = (offset..offset + batch_size).collect();
-            let names: Vec<String> = ids.iter().map(|i| format!("record_{}", i)).collect();
+            let names: Vec<String> = ids.iter().map(|i| format!("record_{i}")).collect();
 
-            let batch = RecordBatch::try_new(schema.clone(), vec![
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
                 Arc::new(Int32Array::from(ids)),
                 Arc::new(StringArray::from(names)),
             ])?;
 
-            let temp_table = format!("temp_data_{}", batch_num);
+            let temp_table = format!("temp_data_{batch_num}");
             drop(ctx.register_batch(&temp_table, batch)?);
 
             let _result = ctx
@@ -585,7 +586,7 @@ mod tests {
         let mut results = Vec::new();
 
         for (concurrency, pool_size, label) in configs {
-            let db = format!("stress_scaling_{}", concurrency);
+            let db = format!("stress_scaling_{concurrency}");
 
             let ctx = SessionContext::new();
             #[cfg(feature = "federation")]
@@ -606,7 +607,7 @@ mod tests {
             let clickhouse = builder
                 .with_schema(&db)
                 .await?
-                .with_new_table("stress_table", ClickHouseEngine::MergeTree, schema.clone())
+                .with_new_table("stress_table", ClickHouseEngine::MergeTree, Arc::clone(&schema))
                 .update_create_options(|opts| opts.with_order_by(&["id".into()]))
                 .create(&ctx)
                 .await?
@@ -626,12 +627,12 @@ mod tests {
                 let ids: Vec<i32> = (offset..offset + batch_size).collect();
                 let values: Vec<i32> = ids.clone();
 
-                let batch = RecordBatch::try_new(schema.clone(), vec![
+                let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
                     Arc::new(Int32Array::from(ids)),
                     Arc::new(Int32Array::from(values)),
                 ])?;
 
-                let temp_table = format!("temp_data_{}", batch_num);
+                let temp_table = format!("temp_data_{batch_num}");
                 drop(ctx.register_batch(&temp_table, batch)?);
 
                 let _result = ctx
@@ -644,13 +645,13 @@ mod tests {
             }
 
             let duration = start.elapsed();
-            let throughput = (num_batches * batch_size) as f64 / duration.as_secs_f64();
+            let throughput = f64::from(num_batches * batch_size) / duration.as_secs_f64();
 
             results.push((label, concurrency, pool_size, duration, throughput));
 
             eprintln!(
-                "✓ {} (concurrency={}, pool={}): {:?} ({:.0} rows/sec)",
-                label, concurrency, pool_size, duration, throughput
+                "✓ {label} (concurrency={concurrency}, pool={pool_size}): {duration:?} \
+                 ({throughput:.0} rows/sec)"
             );
         }
 
@@ -666,8 +667,8 @@ mod tests {
         for (label, concurrency, pool_size, duration, throughput) in &results {
             let speedup = throughput / baseline_throughput;
             eprintln!(
-                "{:<25} {:>12} {:>8} {:>12.2?} {:>12.0} ({:.2}x)",
-                label, concurrency, pool_size, duration, throughput, speedup
+                "{label:<25} {concurrency:>12} {pool_size:>8} {duration:>12.2?} \
+                 {throughput:>12.0} ({speedup:.2}x)"
             );
         }
 
