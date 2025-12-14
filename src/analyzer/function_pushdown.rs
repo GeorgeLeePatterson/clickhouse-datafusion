@@ -1369,8 +1369,8 @@ mod tests {
         #[cfg(feature = "federation")]
         {
             let expected_plan = r#"
-            Projection: clickhouse(power(t.id,Int64(2)),Utf8("Int32")) AS id_mod, count(t.id) AS total, max(clickhouse(exp(t.id),Utf8("Float64"))) AS max_exp
-              Aggregate: groupBy=[[clickhouse(power(CAST(t.id AS Int64), Int64(2)), Utf8("Int32"))]], aggr=[[count(t.id), max(clickhouse(exp(CAST(t.id AS Float64)), Utf8("Float64")))]]
+            Projection: clickhouse(pow(t.id,Int64(2)),Utf8("Int32")) AS id_mod, count(t.id) AS total, max(clickhouse(exp(t.id),Utf8("Float64"))) AS max_exp
+              Aggregate: groupBy=[[clickhouse(power(CAST(t.id AS Int64), Int64(2)) AS pow(t.id, Int64(2)), Utf8("Int32"))]], aggr=[[count(t.id), max(clickhouse(exp(CAST(t.id AS Float64)), Utf8("Float64")))]]
                 SubqueryAlias: t
                   TableScan: table2 projection=[id]
             "#
@@ -1407,7 +1407,7 @@ mod tests {
             Union
               Projection: table1.col1 AS id, clickhouse(exp(CAST(table1.col1 AS Float64)), Utf8("Float64")) AS func_id
                 TableScan: table1 projection=[col1], full_filters=[table1.col1 = Int32(1)]
-              Projection: table2.id, clickhouse(power(CAST(table2.id AS Int64), Int64(2)), Utf8("Float64")) AS func_id
+              Projection: table2.id, clickhouse(power(CAST(table2.id AS Int64), Int64(2)) AS pow(table2.id,Int64(2)), Utf8("Float64")) AS func_id
                 TableScan: table2 projection=[id], full_filters=[table2.id = Int32(1)]
             "#
             .trim();
