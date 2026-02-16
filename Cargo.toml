@@ -47,7 +47,7 @@ features = ["sql"]
 optional = true
 
 [dev-dependencies]
-comfy-table = "7.1"
+comfy-table = "7.2"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
